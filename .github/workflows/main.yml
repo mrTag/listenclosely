@@ -64,20 +64,20 @@ jobs:
 
       - name: Configure
         run: >
-          mkdir GDExtension-build
+          mkdir ListenClosely-build
 
           cmake
-          -B GDExtension-build
+          -B ListenClosely-build
           -G "Ninja"
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           --install-prefix ${{ github.workspace }}/install-${{ matrix.build_type }}
           .
 
       - name: Build
-        run: cmake --build GDExtension-build
+        run: cmake --build ListenClosely-build
 
       - name: Install
-        run: cmake --install GDExtension-build
+        run: cmake --install ListenClosely-build
 
       - name: Upload artifact (Debug)
         if: matrix.build_type == 'Debug'

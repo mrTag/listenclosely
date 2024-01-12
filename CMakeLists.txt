@@ -27,7 +27,7 @@ if ( APPLE )
 endif()
 
 # Main project information
-project( GDExtensionTemplate
+project( ListenClosely
     LANGUAGES
         CXX
     VERSION
@@ -130,6 +130,7 @@ endif()
 set( GODOT_CPP_SYSTEM_HEADERS ON CACHE BOOL "" FORCE )
 
 add_subdirectory( extern/godot-cpp )
+add_subdirectory( extern/opus )
 
 set_target_properties( godot-cpp
     PROPERTIES
@@ -139,4 +140,5 @@ set_target_properties( godot-cpp
 target_link_libraries( ${PROJECT_NAME}
     PRIVATE
         godot-cpp
+        opus
 )
