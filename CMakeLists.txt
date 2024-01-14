@@ -132,6 +132,11 @@ set( GODOT_CPP_SYSTEM_HEADERS ON CACHE BOOL "" FORCE )
 add_subdirectory( extern/godot-cpp )
 add_subdirectory( extern/opus )
 
+set_target_properties( opus
+    PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+)
+
 set_target_properties( godot-cpp
     PROPERTIES
         CXX_VISIBILITY_PRESET hidden    # visibility needs to be the same as the main library

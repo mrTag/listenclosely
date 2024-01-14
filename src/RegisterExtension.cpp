@@ -6,6 +6,7 @@
 #include "godot_cpp/core/defs.hpp"
 #include "godot_cpp/godot.hpp"
 
+#include "AudioStreamPlayerVoipExtension.h"
 #include "Example.h"
 #include "GDExtensionTemplate.h"
 
@@ -33,6 +34,7 @@ namespace
         godot::ClassDB::register_abstract_class<ExampleAbstract>();
 
         godot::ClassDB::register_class<GDExtensionTemplate>();
+        godot::ClassDB::register_class<AudioStreamPlayerVoipExtension>();
     }
 
     /// @brief Called by Godot to let us do any cleanup.
