@@ -16,14 +16,20 @@ protected:
     static void _bind_methods();
 
 private:
-    OpusDecoder *_opus_decoder;
-    OpusEncoder *_opus_encoder;
+    OpusDecoder *_opus_decoder = nullptr;
+    OpusEncoder *_opus_encoder = nullptr;
     godot::Ref<godot::AudioStreamGeneratorPlayback> _audioStreamGeneratorPlayback;
     godot::Ref<godot::AudioEffectCapture> _audioEffectCapture;
+    godot::PackedFloat32Array _sampleBuffer;
+    godot::PackedByteArray _encodeBuffer;
 
 public:
     void _process( double delta ) override;
+    void _enter_tree() override;
+    void _exit_tree() override;
     void _ready() override;
+
+    void transferOpusPacketRPC( godot::PackedByteArray packet );
 };
 
 #endif // AUDIOSTREAMPLAYERVOIPEXTENSION_H

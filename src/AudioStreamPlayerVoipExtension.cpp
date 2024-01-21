@@ -8,19 +8,56 @@
 #include "godot_cpp/classes/audio_stream_player3d.hpp"
 #include "godot_cpp/classes/engine.hpp"
 #include "godot_cpp/classes/multiplayer_api.hpp"
+#include "godot_cpp/classes/multiplayer_peer.hpp"
 #include "godot_cpp/variant/utility_functions.hpp"
 
 #include "opus.h"
 
 void AudioStreamPlayerVoipExtension::_bind_methods()
 {
+    godot::ClassDB::bind_method( godot::D_METHOD( "transferOpusPacketRPC", "numFrames", "packet" ),
+                                 &AudioStreamPlayerVoipExtension::transferOpusPacketRPC );
+}
+
+void AudioStreamPlayerVoipExtension::_ready()
+{
+    godot::Dictionary conf;
+    conf["rpc_mode"] = godot::MultiplayerAPI::RPCMode::RPC_MODE_AUTHORITY;
+    conf["transfer_mode"] = godot::MultiplayerPeer::TransferMode::TRANSFER_MODE_UNRELIABLE;
+    conf["call_local"] = false;
+    conf["channel"] = 0;
+    rpc_config( "transferOpusPacketRPC", conf );
 }
 
 void AudioStreamPlayerVoipExtension::_process( double delta )
 {
+    if ( _audioEffectCapture.is_valid() && _audioEffectCapture->can_get_buffer( 960 ) )
+    {
+        godot::PackedVector2Array stereoSampleBuffer = _audioEffectCapture->get_buffer( 960 );
+        _sampleBuffer.resize( stereoSampleBuffer.size() );
+        for ( int i = 0; i < stereoSampleBuffer.size(); ++i )
+        {
+            _sampleBuffer[i] = stereoSampleBuffer[i].x;
+        }
+        // we do the resizing here, so that we only use up ram, when we are actually using the
+        // encoder.
+        _encodeBuffer.resize( 150000 );
+        int sizeOfEncodedPackage =
+            opus_encode_float( _opus_encoder, _sampleBuffer.ptr(), _sampleBuffer.size(),
+                               _encodeBuffer.ptrw(), _encodeBuffer.size() );
+        if ( sizeOfEncodedPackage <= 0 )
+        {
+            godot::UtilityFunctions::printerr(
+                "AudioStreamPlayerVoipExtension could not encode captured audio. Opus errorcode: ",
+                sizeOfEncodedPackage );
+            return;
+        }
+        _encodeBuffer.resize( sizeOfEncodedPackage );
+        rpc( "transferOpusPacketRPC", _sampleBuffer.size(), _encodeBuffer );
+    }
 }
 
-void AudioStreamPlayerVoipExtension::_ready()
+void AudioStreamPlayerVoipExtension::_enter_tree()
 {
     // TODO: add mix_rate and buffer length as a property, so that it can be set in the editor.
     // NOTE: opus has pretty strict requirements on the mix rate: 48000 or 24000 or 16000 or 12000
@@ -143,7 +180,7 @@ void AudioStreamPlayerVoipExtension::_ready()
         if ( opus_error != OPUS_OK )
         {
             godot::UtilityFunctions::printerr(
-                "AudioStreamPlayerVoipExtension could not create Opus Decoder. Error: ",
+                "AudioStreamPlayerVoipExtension could not create Opus Decoder. Opus errorcode: ",
                 opus_error );
             return;
         }
@@ -166,5 +203,68 @@ void AudioStreamPlayerVoipExtension::_ready()
             parentStreamPlayer3D->set_stream( audio_stream_generator );
             _audioStreamGeneratorPlayback = parentStreamPlayer3D->get_stream_playback();
         }
+
+        godot::UtilityFunctions::print(
+            "AudioStreamPlayerVoipExtension initialized as AudioStreamGenerator successfully." );
     }
+
+    if ( parentStreamPlayer != nullptr )
+    {
+        parentStreamPlayer->play();
+    }
+    if ( parentStreamPlayer2D != nullptr )
+    {
+        parentStreamPlayer2D->play();
+    }
+    if ( parentStreamPlayer3D != nullptr )
+    {
+        parentStreamPlayer3D->play();
+    }
+}
+
+void AudioStreamPlayerVoipExtension::_exit_tree()
+{
+    if ( _opus_decoder != nullptr )
+    {
+        opus_decoder_destroy( _opus_decoder );
+    }
+    if ( _opus_encoder != nullptr )
+    {
+        opus_encoder_destroy( _opus_encoder );
+    }
+    _opus_decoder = nullptr;
+    _opus_encoder = nullptr;
+    _audioEffectCapture = godot::Variant();
+    _audioStreamGeneratorPlayback = godot::Variant();
+}
+
+void AudioStreamPlayerVoipExtension::transferOpusPacketRPC( godot::PackedByteArray packet )
+{
+    // this function was called by the rpc system because a packet was sent to us
+    // make sure that this instance is prepared to receive the packet!
+    if ( !_audioStreamGeneratorPlayback.is_valid() || _opus_decoder == nullptr )
+    {
+        godot::UtilityFunctions::printerr(
+            "AudioStreamPlayerVoipExtension received Opus Packed, but is not ready for it! "
+            "(_audioStreamGeneratorPlayback or _opus_decoder is null)" );
+        return;
+    }
+    _sampleBuffer.resize( 960 );
+    int numDecodedSamples = opus_decode_float( _opus_decoder, packet.ptr(), packet.size(),
+                                               _sampleBuffer.ptrw(), 960, 0 );
+    if ( numDecodedSamples <= 0 )
+    {
+        godot::UtilityFunctions::printerr(
+            "AudioStreamPlayerVoipExtension could not decode received packet. Opus errorcode: ",
+            numDecodedSamples );
+        return;
+    }
+    godot::PackedVector2Array bufferInStreamFormat;
+    bufferInStreamFormat.resize( numDecodedSamples );
+    for ( int i = 0; i < numDecodedSamples; ++i )
+    {
+        bufferInStreamFormat.append( godot::Vector2( _sampleBuffer[i], _sampleBuffer[i] ) );
+    }
+
+    _audioStreamGeneratorPlayback->push_buffer( bufferInStreamFormat );
 }
