@@ -15,7 +15,7 @@
 
 void AudioStreamPlayerVoipExtension::_bind_methods()
 {
-    godot::ClassDB::bind_method( godot::D_METHOD( "transferOpusPacketRPC", "numFrames", "packet" ),
+    godot::ClassDB::bind_method( godot::D_METHOD( "transferOpusPacketRPC", "packet" ),
                                  &AudioStreamPlayerVoipExtension::transferOpusPacketRPC );
 }
 
@@ -42,9 +42,9 @@ void AudioStreamPlayerVoipExtension::_process( double delta )
         // we do the resizing here, so that we only use up ram, when we are actually using the
         // encoder.
         _encodeBuffer.resize( 150000 );
-        int sizeOfEncodedPackage =
-            opus_encode_float( _opus_encoder, _sampleBuffer.ptr(), _sampleBuffer.size(),
-                               _encodeBuffer.ptrw(), _encodeBuffer.size() );
+        int sizeOfEncodedPackage = opus_encode_float(
+            _opus_encoder, _sampleBuffer.ptr(), static_cast<int>( _sampleBuffer.size() ),
+            _encodeBuffer.ptrw(), static_cast<int>( _encodeBuffer.size() ) );
         if ( sizeOfEncodedPackage <= 0 )
         {
             godot::UtilityFunctions::printerr(
@@ -250,8 +250,9 @@ void AudioStreamPlayerVoipExtension::transferOpusPacketRPC( godot::PackedByteArr
         return;
     }
     _sampleBuffer.resize( 960 );
-    int numDecodedSamples = opus_decode_float( _opus_decoder, packet.ptr(), packet.size(),
-                                               _sampleBuffer.ptrw(), 960, 0 );
+    int numDecodedSamples =
+        opus_decode_float( _opus_decoder, packet.ptr(), static_cast<int>( packet.size() ),
+                           _sampleBuffer.ptrw(), 960, 0 );
     if ( numDecodedSamples <= 0 )
     {
         godot::UtilityFunctions::printerr(
