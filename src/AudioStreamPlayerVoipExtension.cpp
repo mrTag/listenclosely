@@ -53,7 +53,7 @@ void AudioStreamPlayerVoipExtension::_process( double delta )
             return;
         }
         _encodeBuffer.resize( sizeOfEncodedPackage );
-        rpc( "transferOpusPacketRPC", _sampleBuffer.size(), _encodeBuffer );
+        rpc( "transferOpusPacketRPC", _encodeBuffer );
     }
 }
 
@@ -191,39 +191,31 @@ void AudioStreamPlayerVoipExtension::_enter_tree()
         if ( parentStreamPlayer != nullptr )
         {
             parentStreamPlayer->set_stream( audio_stream_generator );
+            parentStreamPlayer->play();
             _audioStreamGeneratorPlayback = parentStreamPlayer->get_stream_playback();
         }
         if ( parentStreamPlayer2D != nullptr )
         {
             parentStreamPlayer2D->set_stream( audio_stream_generator );
+            parentStreamPlayer2D->play();
             _audioStreamGeneratorPlayback = parentStreamPlayer2D->get_stream_playback();
         }
         if ( parentStreamPlayer3D != nullptr )
         {
             parentStreamPlayer3D->set_stream( audio_stream_generator );
+            parentStreamPlayer3D->play();
             _audioStreamGeneratorPlayback = parentStreamPlayer3D->get_stream_playback();
         }
 
         godot::UtilityFunctions::print(
             "AudioStreamPlayerVoipExtension initialized as AudioStreamGenerator successfully." );
     }
-
-    if ( parentStreamPlayer != nullptr )
-    {
-        parentStreamPlayer->play();
-    }
-    if ( parentStreamPlayer2D != nullptr )
-    {
-        parentStreamPlayer2D->play();
-    }
-    if ( parentStreamPlayer3D != nullptr )
-    {
-        parentStreamPlayer3D->play();
-    }
 }
 
 void AudioStreamPlayerVoipExtension::_exit_tree()
 {
+    godot::UtilityFunctions::print(
+        "AudioStreamPlayerVoipExtension exit_tree: cleaning up opus and audiostream" );
     if ( _opus_decoder != nullptr )
     {
         opus_decoder_destroy( _opus_decoder );
