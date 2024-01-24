@@ -16,6 +16,12 @@ protected:
     static void _bind_methods();
 
 private:
+    // NOTE: opus has pretty strict requirements on the mix rate: 48000 or 24000 or 16000 or 12000
+    // or 8000
+    int mix_rate = 24000;
+    float buffer_length = 0.1f;
+    int audio_package_duration_ms = 40;
+
     OpusDecoder *_opus_decoder = nullptr;
     OpusEncoder *_opus_encoder = nullptr;
     godot::Ref<godot::AudioStreamGeneratorPlayback> _audioStreamGeneratorPlayback;
@@ -30,6 +36,24 @@ public:
     void _ready() override;
 
     void transferOpusPacketRPC( godot::PackedByteArray packet );
+    void initialize();
+
+    [[nodiscard]] int get_mix_rate() const
+    {
+        return mix_rate;
+    }
+    void set_mix_rate( const int new_mix_rate )
+    {
+        mix_rate = new_mix_rate;
+    }
+    [[nodiscard]] float get_buffer_length() const
+    {
+        return buffer_length;
+    }
+    void set_buffer_length( const float new_buffer_length )
+    {
+        buffer_length = new_buffer_length;
+    }
 };
 
 #endif // AUDIOSTREAMPLAYERVOIPEXTENSION_H

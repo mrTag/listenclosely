@@ -17,6 +17,22 @@ void AudioStreamPlayerVoipExtension::_bind_methods()
 {
     godot::ClassDB::bind_method( godot::D_METHOD( "transferOpusPacketRPC", "packet" ),
                                  &AudioStreamPlayerVoipExtension::transferOpusPacketRPC );
+    godot::ClassDB::bind_method( godot::D_METHOD( "initialize" ),
+                                 &AudioStreamPlayerVoipExtension::initialize );
+
+    godot::ClassDB::bind_method( godot::D_METHOD( "get_mix_rate" ),
+                                 &AudioStreamPlayerVoipExtension::get_mix_rate );
+    godot::ClassDB::bind_method( godot::D_METHOD( "set_mix_rate", "mix_rate" ),
+                                 &AudioStreamPlayerVoipExtension::set_mix_rate );
+    ADD_PROPERTY( godot::PropertyInfo( godot::Variant::INT, "mix_rate" ), "set_mix_rate",
+                  "get_mix_rate" );
+
+    godot::ClassDB::bind_method( godot::D_METHOD( "get_buffer_length" ),
+                                 &AudioStreamPlayerVoipExtension::get_buffer_length );
+    godot::ClassDB::bind_method( godot::D_METHOD( "set_buffer_length", "buffer_length" ),
+                                 &AudioStreamPlayerVoipExtension::set_buffer_length );
+    ADD_PROPERTY( godot::PropertyInfo( godot::Variant::FLOAT, "buffer_length" ),
+                  "set_buffer_length", "get_buffer_length" );
 }
 
 void AudioStreamPlayerVoipExtension::_ready()
@@ -31,9 +47,11 @@ void AudioStreamPlayerVoipExtension::_ready()
 
 void AudioStreamPlayerVoipExtension::_process( double delta )
 {
-    if ( _audioEffectCapture.is_valid() && _audioEffectCapture->can_get_buffer( 960 ) )
+    if ( _audioEffectCapture.is_valid() &&
+         _audioEffectCapture->can_get_buffer( audio_package_duration_ms * mix_rate / 1000 ) )
     {
-        godot::PackedVector2Array stereoSampleBuffer = _audioEffectCapture->get_buffer( 960 );
+        godot::PackedVector2Array stereoSampleBuffer =
+            _audioEffectCapture->get_buffer( audio_package_duration_ms * mix_rate / 1000 );
         _sampleBuffer.resize( stereoSampleBuffer.size() );
         for ( int i = 0; i < stereoSampleBuffer.size(); ++i )
         {
@@ -59,12 +77,6 @@ void AudioStreamPlayerVoipExtension::_process( double delta )
 
 void AudioStreamPlayerVoipExtension::_enter_tree()
 {
-    // TODO: add mix_rate and buffer length as a property, so that it can be set in the editor.
-    // NOTE: opus has pretty strict requirements on the mix rate: 48000 or 24000 or 16000 or 12000
-    // or 8000
-    int mix_rate = 24000;
-    float buffer_length = 0.1f;
-
     auto *audioserver = godot::AudioServer::get_singleton();
     if ( godot::Engine::get_singleton()->is_editor_hint() )
     {
@@ -106,8 +118,12 @@ void AudioStreamPlayerVoipExtension::_enter_tree()
                 audioserver->add_bus_effect( capture_bus_index, audioEffectCapture );
             }
         }
-        return;
     }
+}
+
+void AudioStreamPlayerVoipExtension::initialize()
+{
+    auto *audioserver = godot::AudioServer::get_singleton();
 
     // AudioStreamPlayer, AudioStreamPlayer2D and AudioStreamPlayer3D don't have a common ancestor
     // that we can use here. So we have to handle all 3 seperately if we want to support all 3.
@@ -141,27 +157,20 @@ void AudioStreamPlayerVoipExtension::_enter_tree()
         if ( parentStreamPlayer != nullptr )
         {
             parentStreamPlayer->set_stream( new godot::AudioStreamMicrophone() );
+            parentStreamPlayer->set_bus( "MicCapture" );
+            parentStreamPlayer->play();
         }
         if ( parentStreamPlayer2D != nullptr )
         {
             parentStreamPlayer2D->set_stream( new godot::AudioStreamMicrophone() );
+            parentStreamPlayer2D->set_bus( "MicCapture" );
+            parentStreamPlayer2D->play();
         }
         if ( parentStreamPlayer3D != nullptr )
         {
             parentStreamPlayer3D->set_stream( new godot::AudioStreamMicrophone() );
-        }
-
-        if ( parentStreamPlayer != nullptr )
-        {
-            parentStreamPlayer->set_bus( "MicCapture" );
-        }
-        if ( parentStreamPlayer2D != nullptr )
-        {
-            parentStreamPlayer2D->set_bus( "MicCapture" );
-        }
-        if ( parentStreamPlayer3D != nullptr )
-        {
             parentStreamPlayer3D->set_bus( "MicCapture" );
+            parentStreamPlayer3D->play();
         }
 
         int capture_bus_index = audioserver->get_bus_index( "MicCapture" );
@@ -241,10 +250,10 @@ void AudioStreamPlayerVoipExtension::transferOpusPacketRPC( godot::PackedByteArr
             "(_audioStreamGeneratorPlayback or _opus_decoder is null)" );
         return;
     }
-    _sampleBuffer.resize( 960 );
+    _sampleBuffer.resize( audio_package_duration_ms * mix_rate / 1000 );
     int numDecodedSamples =
         opus_decode_float( _opus_decoder, packet.ptr(), static_cast<int>( packet.size() ),
-                           _sampleBuffer.ptrw(), 960, 0 );
+                           _sampleBuffer.ptrw(), audio_package_duration_ms * mix_rate / 1000, 0 );
     if ( numDecodedSamples <= 0 )
     {
         godot::UtilityFunctions::printerr(
