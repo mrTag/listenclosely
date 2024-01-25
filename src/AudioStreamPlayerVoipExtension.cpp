@@ -71,7 +71,8 @@ void AudioStreamPlayerVoipExtension::_process( double delta )
             return;
         }
         _encodeBuffer.resize( sizeOfEncodedPackage );
-        rpc( "transferOpusPacketRPC", _encodeBuffer );
+        _runningPacketNumber += 1;
+        rpc( "transferOpusPacketRPC", _runningPacketNumber, _encodeBuffer );
     }
 }
 
@@ -239,17 +240,29 @@ void AudioStreamPlayerVoipExtension::_exit_tree()
     _audioStreamGeneratorPlayback = godot::Variant();
 }
 
-void AudioStreamPlayerVoipExtension::transferOpusPacketRPC( godot::PackedByteArray packet )
+void AudioStreamPlayerVoipExtension::transferOpusPacketRPC( unsigned char packetNumber,
+                                                            godot::PackedByteArray packet )
 {
     // this function was called by the rpc system because a packet was sent to us
     // make sure that this instance is prepared to receive the packet!
     if ( !_audioStreamGeneratorPlayback.is_valid() || _opus_decoder == nullptr )
     {
         godot::UtilityFunctions::printerr(
-            "AudioStreamPlayerVoipExtension received Opus Packed, but is not ready for it! "
+            "AudioStreamPlayerVoipExtension received Opus Packet, but is not ready for it! "
             "(_audioStreamGeneratorPlayback or _opus_decoder is null)" );
         return;
     }
+    if ( packetNumber < _runningPacketNumber )
+    {
+        _runningPacketNumber += 254;
+    }
+    if ( packetNumber != _runningPacketNumber + 1 )
+    {
+        godot::UtilityFunctions::printerr(
+            "AudioStreamPlayerVoipExtension received out of order Opus Packet. packetNumber: ",
+            packetNumber, " expected: ", _runningPacketNumber + 1 );
+    }
+    _runningPacketNumber = packetNumber;
     _sampleBuffer.resize( audio_package_duration_ms * mix_rate / 1000 );
     int numDecodedSamples =
         opus_decode_float( _opus_decoder, packet.ptr(), static_cast<int>( packet.size() ),
@@ -260,6 +273,13 @@ void AudioStreamPlayerVoipExtension::transferOpusPacketRPC( godot::PackedByteArr
             "AudioStreamPlayerVoipExtension could not decode received packet. Opus errorcode: ",
             numDecodedSamples );
         return;
+    }
+    if ( numDecodedSamples != audio_package_duration_ms * mix_rate / 1000 )
+    {
+        godot::UtilityFunctions::printerr(
+            "AudioStreamPlayerVoipExtension Number of decoded samples doesn't match expectation!. "
+            "numDecodedSamples: ",
+            numDecodedSamples );
     }
     godot::PackedVector2Array bufferInStreamFormat;
     bufferInStreamFormat.resize( numDecodedSamples );

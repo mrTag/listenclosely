@@ -28,6 +28,7 @@ private:
     godot::Ref<godot::AudioEffectCapture> _audioEffectCapture;
     godot::PackedFloat32Array _sampleBuffer;
     godot::PackedByteArray _encodeBuffer;
+    unsigned char _runningPacketNumber;
 
 public:
     void _process( double delta ) override;
@@ -35,7 +36,7 @@ public:
     void _exit_tree() override;
     void _ready() override;
 
-    void transferOpusPacketRPC( godot::PackedByteArray packet );
+    void transferOpusPacketRPC( unsigned char packetNumber, godot::PackedByteArray packet );
     void initialize();
 
     [[nodiscard]] int get_mix_rate() const
