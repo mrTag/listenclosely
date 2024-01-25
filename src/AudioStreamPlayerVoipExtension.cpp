@@ -197,7 +197,7 @@ void AudioStreamPlayerVoipExtension::initialize()
         godot::Ref<godot::AudioStreamGenerator> audio_stream_generator;
         audio_stream_generator.instantiate();
         audio_stream_generator->set_buffer_length( buffer_length );
-        audio_stream_generator->set_mix_rate( mix_rate );
+        audio_stream_generator->set_mix_rate( audioserver->get_mix_rate() );
         if ( parentStreamPlayer != nullptr )
         {
             parentStreamPlayer->set_stream( audio_stream_generator );
@@ -285,7 +285,7 @@ void AudioStreamPlayerVoipExtension::transferOpusPacketRPC( unsigned char packet
     bufferInStreamFormat.resize( numDecodedSamples );
     for ( int i = 0; i < numDecodedSamples; ++i )
     {
-        bufferInStreamFormat.append( godot::Vector2( _sampleBuffer[i], _sampleBuffer[i] ) );
+        bufferInStreamFormat[i] = godot::Vector2( _sampleBuffer[i], _sampleBuffer[i] );
     }
 
     _audioStreamGeneratorPlayback->push_buffer( bufferInStreamFormat );
