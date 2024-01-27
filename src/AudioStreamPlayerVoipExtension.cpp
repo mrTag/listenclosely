@@ -176,6 +176,7 @@ void AudioStreamPlayerVoipExtension::initialize()
 
         int capture_bus_index = audioserver->get_bus_index( "MicCapture" );
         _audioEffectCapture = audioserver->get_bus_effect( capture_bus_index, 0 );
+        _audioEffectCapture->set_buffer_length( buffer_length );
 
         godot::UtilityFunctions::print(
             "AudioStreamPlayerVoipExtension initialized as MicCapture successfully." );
@@ -288,5 +289,16 @@ void AudioStreamPlayerVoipExtension::transferOpusPacketRPC( unsigned char packet
         bufferInStreamFormat[i] = godot::Vector2( _sampleBuffer[i], _sampleBuffer[i] );
     }
 
-    _audioStreamGeneratorPlayback->push_buffer( bufferInStreamFormat );
+    bool pushed_successfully = _audioStreamGeneratorPlayback->push_buffer( bufferInStreamFormat );
+    if ( !pushed_successfully )
+    {
+        godot::UtilityFunctions::printerr(
+            "AudioStreamPlayerVoipExtension could not push received audio buffer into the "
+            "AudioStreamGeneratorPlayback. Free Space: ",
+            _audioStreamGeneratorPlayback->get_frames_available(),
+            " needed space: ", bufferInStreamFormat.size() );
+        // let's try to push at least as much as possible...
+        bufferInStreamFormat.resize( _audioStreamGeneratorPlayback->get_frames_available() );
+        _audioStreamGeneratorPlayback->push_buffer( bufferInStreamFormat );
+    }
 }
