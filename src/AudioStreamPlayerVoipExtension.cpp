@@ -41,7 +41,7 @@ void AudioStreamPlayerVoipExtension::_ready()
     conf["rpc_mode"] = godot::MultiplayerAPI::RPCMode::RPC_MODE_AUTHORITY;
     conf["transfer_mode"] = godot::MultiplayerPeer::TransferMode::TRANSFER_MODE_UNRELIABLE;
     conf["call_local"] = false;
-    conf["channel"] = 0;
+    conf["channel"] = 9;
     rpc_config( "transferOpusPacketRPC", conf );
 }
 
@@ -254,12 +254,11 @@ void AudioStreamPlayerVoipExtension::transferOpusPacketRPC( unsigned char packet
         return;
     }
     if ( packetNumber < _runningPacketNumber )
-    {
-        _runningPacketNumber += 254;
-    }
+        // byte overflow. just ignore any order discrepancy for this one...
+        _runningPacketNumber = packetNumber -1;
     if ( packetNumber != _runningPacketNumber + 1 )
     {
-        godot::UtilityFunctions::printerr(
+        godot::UtilityFunctions::print(
             "AudioStreamPlayerVoipExtension received out of order Opus Packet. packetNumber: ",
             packetNumber, " expected: ", _runningPacketNumber + 1 );
     }
