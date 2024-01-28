@@ -29,6 +29,7 @@ private:
     godot::PackedFloat32Array _sampleBuffer;
     godot::PackedByteArray _encodeBuffer;
     unsigned char _runningPacketNumber;
+    float _current_loudness;
 
 public:
     void _process( double delta ) override;
@@ -54,6 +55,10 @@ public:
     void set_buffer_length( const float new_buffer_length )
     {
         buffer_length = new_buffer_length;
+    }
+    [[nodiscard]] float get_current_loudness() const
+    {
+        return _current_loudness;
     }
 };
 
