@@ -9,6 +9,8 @@ target_sources( ${PROJECT_NAME}
         GDExtensionTemplate.h
         GDExtensionTemplate.cpp
         RegisterExtension.cpp
+        DebugInfoWindow.cpp
+        DebugInfoWindow.h
 )
 
 target_include_directories( ${PROJECT_NAME}

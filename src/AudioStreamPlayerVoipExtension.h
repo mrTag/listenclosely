@@ -4,6 +4,9 @@
 #include "godot_cpp/classes/audio_effect_capture.hpp"
 #include "godot_cpp/classes/audio_stream_generator_playback.hpp"
 #include "godot_cpp/classes/node.hpp"
+#include "godot_cpp/templates/local_vector.hpp"
+
+#include "DebugInfoWindow.h"
 
 struct OpusEncoder;
 struct OpusDecoder;
@@ -31,13 +34,15 @@ private:
     unsigned char _runningPacketNumber;
     float _current_loudness;
 
+    int _num_out_of_order = 0;
+    DebugInfoWindow* _debugInfoWindow;
 public:
     void _process( double delta ) override;
     void _enter_tree() override;
     void _exit_tree() override;
     void _ready() override;
 
-    void transferOpusPacketRPC( unsigned char packetNumber, godot::PackedByteArray packet );
+    void transfer_opus_packet_rpc( unsigned char packetNumber, const godot::PackedByteArray &packet );
     void initialize();
 
     [[nodiscard]] int get_mix_rate() const

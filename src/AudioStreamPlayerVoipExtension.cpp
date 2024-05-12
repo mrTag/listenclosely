@@ -10,13 +10,27 @@
 #include "godot_cpp/classes/multiplayer_api.hpp"
 #include "godot_cpp/classes/multiplayer_peer.hpp"
 #include "godot_cpp/variant/utility_functions.hpp"
+#include "godot_cpp/classes/time.hpp"
 
 #include "opus.h"
 
+inline godot::Dictionary create_debug_data_entry( const godot::String &state )
+{
+    godot::Dictionary entry;
+    entry["time"] = godot::Time::get_singleton()->get_ticks_msec();
+    entry["state"] = state;
+    entry["buffer_size"] = 0;
+    entry["loudness"] = 0;
+    entry["num_out_of_order"] = 0;
+    entry["num_skips"] = 0;
+    entry["bytes"] = 0;
+    return entry;
+}
+
 void AudioStreamPlayerVoipExtension::_bind_methods()
 {
-    godot::ClassDB::bind_method( godot::D_METHOD( "transferOpusPacketRPC", "packet" ),
-                                 &AudioStreamPlayerVoipExtension::transferOpusPacketRPC );
+    godot::ClassDB::bind_method( godot::D_METHOD( "transfer_opus_packet_rpc", "packet" ),
+                                 &AudioStreamPlayerVoipExtension::transfer_opus_packet_rpc );
     godot::ClassDB::bind_method( godot::D_METHOD( "initialize" ),
                                  &AudioStreamPlayerVoipExtension::initialize );
 
@@ -37,7 +51,7 @@ void AudioStreamPlayerVoipExtension::_bind_methods()
     godot::ClassDB::bind_method( godot::D_METHOD( "get_current_loudness_db" ),
                                  &AudioStreamPlayerVoipExtension::get_current_loudness );
     ADD_PROPERTY( godot::PropertyInfo( godot::Variant::FLOAT, "current_loudness_db" ), "",
-                  "get_current_loudness" );
+                  "get_current_loudness_db" );
 }
 
 void AudioStreamPlayerVoipExtension::_ready()
@@ -47,7 +61,7 @@ void AudioStreamPlayerVoipExtension::_ready()
     conf["transfer_mode"] = godot::MultiplayerPeer::TransferMode::TRANSFER_MODE_UNRELIABLE;
     conf["call_local"] = false;
     conf["channel"] = 9;
-    rpc_config( "transferOpusPacketRPC", conf );
+    rpc_config( "transfer_opus_packet_rpc", conf );
 }
 
 void AudioStreamPlayerVoipExtension::_process( double delta )
@@ -66,7 +80,7 @@ void AudioStreamPlayerVoipExtension::_process( double delta )
             _sampleBuffer[i] = stereoSampleBuffer[i].x;
             _current_loudness += _sampleBuffer[i] * _sampleBuffer[i];
         }
-        _current_loudness = godot::Math::sqrt( _current_loudness / stereoSampleBuffer.size() );
+        _current_loudness = godot::Math::sqrt( _current_loudness / static_cast<float>( stereoSampleBuffer.size() ) );
         // we do the resizing here, so that we only use up ram, when we are actually using the
         // encoder.
         _encodeBuffer.resize( 150000 );
@@ -82,8 +96,13 @@ void AudioStreamPlayerVoipExtension::_process( double delta )
         }
         _encodeBuffer.resize( sizeOfEncodedPackage );
         _runningPacketNumber += 1;
-        rpc( "transferOpusPacketRPC", _runningPacketNumber, _encodeBuffer );
+        rpc( "transfer_opus_packet_rpc", _runningPacketNumber, _encodeBuffer );
+
+        _debugInfoWindow->SetString( "bytes", godot::itos(sizeOfEncodedPackage ));
+        _debugInfoWindow->SetString( "buffer size", godot::itos(_audioEffectCapture->get_frames_available()) );
+        _debugInfoWindow->AddToGraph( "loudness", _current_loudness);
     }
+    _debugInfoWindow->updateGraphs();
 }
 
 void AudioStreamPlayerVoipExtension::_enter_tree()
@@ -135,6 +154,10 @@ void AudioStreamPlayerVoipExtension::_enter_tree()
 void AudioStreamPlayerVoipExtension::initialize()
 {
     auto *audioserver = godot::AudioServer::get_singleton();
+
+    _debugInfoWindow = new DebugInfoWindow();
+    _debugInfoWindow->Initialize( godot::String("Player ") + godot::itos( get_multiplayer_authority() ) + (is_multiplayer_authority() ? godot::String(" (me)") : godot::String(" (remote)") ));
+    add_child( _debugInfoWindow );
 
     // AudioStreamPlayer, AudioStreamPlayer2D and AudioStreamPlayer3D don't have a common ancestor
     // that we can use here. So we have to handle all 3 seperately if we want to support all 3.
@@ -251,8 +274,8 @@ void AudioStreamPlayerVoipExtension::_exit_tree()
     _audioStreamGeneratorPlayback = godot::Variant();
 }
 
-void AudioStreamPlayerVoipExtension::transferOpusPacketRPC( unsigned char packetNumber,
-                                                            godot::PackedByteArray packet )
+void AudioStreamPlayerVoipExtension::transfer_opus_packet_rpc( unsigned char packetNumber,
+                                                            const godot::PackedByteArray &packet )
 {
     // this function was called by the rpc system because a packet was sent to us
     // make sure that this instance is prepared to receive the packet!
@@ -263,16 +286,12 @@ void AudioStreamPlayerVoipExtension::transferOpusPacketRPC( unsigned char packet
             "(_audioStreamGeneratorPlayback or _opus_decoder is null)" );
         return;
     }
-    if ( packetNumber < _runningPacketNumber )
-    {
-        // byte overflow. just ignore any order discrepancy for this one...
-        _runningPacketNumber = packetNumber;
-    }
-    else if ( packetNumber != _runningPacketNumber + 1 )
+    if ( packetNumber != (_runningPacketNumber + 1) % 256 )
     {
         godot::UtilityFunctions::print(
             "AudioStreamPlayerVoipExtension received out of order Opus Packet. packetNumber: ",
-            packetNumber, " expected: ", _runningPacketNumber + 1 );
+            packetNumber, " expected: ", (_runningPacketNumber + 1) % 256 );
+        _num_out_of_order += 1;
     }
     _runningPacketNumber = packetNumber;
     _sampleBuffer.resize( audio_package_duration_ms * mix_rate / 1000 );
@@ -301,7 +320,7 @@ void AudioStreamPlayerVoipExtension::transferOpusPacketRPC( unsigned char packet
         bufferInStreamFormat[i] = godot::Vector2( _sampleBuffer[i], _sampleBuffer[i] );
         _current_loudness += _sampleBuffer[i] * _sampleBuffer[i];
     }
-    _current_loudness = godot::Math::sqrt( _current_loudness / numDecodedSamples );
+    _current_loudness = godot::Math::sqrt( _current_loudness / static_cast<float>( numDecodedSamples ) );
 
     bool pushed_successfully = _audioStreamGeneratorPlayback->push_buffer( bufferInStreamFormat );
     if ( !pushed_successfully )
@@ -315,4 +334,10 @@ void AudioStreamPlayerVoipExtension::transferOpusPacketRPC( unsigned char packet
         bufferInStreamFormat.resize( _audioStreamGeneratorPlayback->get_frames_available() );
         _audioStreamGeneratorPlayback->push_buffer( bufferInStreamFormat );
     }
+
+    _debugInfoWindow->SetString( "bytes", godot::itos(packet.size() ));
+    _debugInfoWindow->SetString( "num out of order", godot::itos( _num_out_of_order ) );
+    _debugInfoWindow->SetString( "buffer size", godot::itos(
+        static_cast<int>( buffer_length * static_cast<float>( mix_rate ) ) - _audioStreamGeneratorPlayback->get_frames_available()) );
+    _debugInfoWindow->AddToGraph( "loudness", _current_loudness);
 }

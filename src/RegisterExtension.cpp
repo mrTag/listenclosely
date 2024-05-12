@@ -35,6 +35,8 @@ namespace
 
         godot::ClassDB::register_class<GDExtensionTemplate>();
         godot::ClassDB::register_class<AudioStreamPlayerVoipExtension>();
+        godot::ClassDB::register_class<DebugInfoWindow>();
+        godot::ClassDB::register_class<PolyLineControl>();
     }
 
     /// @brief Called by Godot to let us do any cleanup.
