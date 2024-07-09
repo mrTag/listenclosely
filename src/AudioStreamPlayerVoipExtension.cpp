@@ -10,22 +10,9 @@
 #include "godot_cpp/classes/multiplayer_api.hpp"
 #include "godot_cpp/classes/multiplayer_peer.hpp"
 #include "godot_cpp/variant/utility_functions.hpp"
-#include "godot_cpp/classes/time.hpp"
+#include "godot_cpp/classes/scene_tree.hpp"
 
 #include "opus.h"
-
-inline godot::Dictionary create_debug_data_entry( const godot::String &state )
-{
-    godot::Dictionary entry;
-    entry["time"] = godot::Time::get_singleton()->get_ticks_msec();
-    entry["state"] = state;
-    entry["buffer_size"] = 0;
-    entry["loudness"] = 0;
-    entry["num_out_of_order"] = 0;
-    entry["num_skips"] = 0;
-    entry["bytes"] = 0;
-    return entry;
-}
 
 void AudioStreamPlayerVoipExtension::_bind_methods()
 {
@@ -157,7 +144,7 @@ void AudioStreamPlayerVoipExtension::initialize()
 
     _debugInfoWindow = new DebugInfoWindow();
     _debugInfoWindow->Initialize( godot::String("Player ") + godot::itos( get_multiplayer_authority() ) + (is_multiplayer_authority() ? godot::String(" (me)") : godot::String(" (remote)") ));
-    add_child( _debugInfoWindow );
+    get_tree()->get_root()->add_child( _debugInfoWindow );
 
     // AudioStreamPlayer, AudioStreamPlayer2D and AudioStreamPlayer3D don't have a common ancestor
     // that we can use here. So we have to handle all 3 seperately if we want to support all 3.

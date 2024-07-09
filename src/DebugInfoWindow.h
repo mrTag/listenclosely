@@ -23,6 +23,15 @@ public:
         // no need to do anything from gdscript for the moment (only c++ for now...)
     }
 
+    void _process( double delta ) override
+    {
+        queue_redraw();
+    }
+    void _ready() override
+    {
+        set_process( true );
+    }
+
     godot::PackedVector2Array Polyline;
     void _draw() override
     {

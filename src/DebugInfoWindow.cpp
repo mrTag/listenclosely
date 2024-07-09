@@ -54,6 +54,7 @@ void DebugInfoWindow::updateGraphs(  )
 void DebugInfoWindow::Initialize(const godot::String& debug_title, float graph_time_duration )
 {
     set_process( true );
+    set_process_mode( PROCESS_MODE_ALWAYS );
     set_title( debug_title );
     set_initial_position( WINDOW_INITIAL_POSITION_CENTER_OTHER_SCREEN );
     set_size( godot::Vector2i(500,500) );
