@@ -18,24 +18,26 @@
 #define RESAMPLER_POLYPHASE_RESAMPLER_MONO_H
 
 #include <sys/types.h>
-#include <unistd.h>
 
 #include "PolyphaseResampler.h"
 #include "ResamplerDefinitions.h"
 
-namespace RESAMPLER_OUTER_NAMESPACE::resampler {
+namespace RESAMPLER_OUTER_NAMESPACE
+{
+  namespace resampler {
 
-class PolyphaseResamplerMono : public PolyphaseResampler {
-public:
-    explicit PolyphaseResamplerMono(const MultiChannelResampler::Builder &builder);
+    class PolyphaseResamplerMono : public PolyphaseResampler {
+    public:
+      explicit PolyphaseResamplerMono(const MultiChannelResampler::Builder &builder);
 
-    virtual ~PolyphaseResamplerMono() = default;
+      virtual ~PolyphaseResamplerMono() = default;
 
-    void writeFrame(const float *frame) override;
+      void writeFrame(const float *frame) override;
 
-    void readFrame(float *frame) override;
-};
+      void readFrame(float *frame) override;
+    };
 
+  }
 } /* namespace RESAMPLER_OUTER_NAMESPACE::resampler */
 
 #endif //RESAMPLER_POLYPHASE_RESAMPLER_MONO_H

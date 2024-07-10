@@ -21,34 +21,39 @@
 
 #include "ResamplerDefinitions.h"
 
-namespace RESAMPLER_OUTER_NAMESPACE::resampler {
+#include <cstdint>
 
-/**
- * Represent the ratio of two integers.
- */
-class IntegerRatio {
-public:
-    IntegerRatio(int32_t numerator, int32_t denominator)
-            : mNumerator(numerator), mDenominator(denominator) {}
+namespace RESAMPLER_OUTER_NAMESPACE
+{
+  namespace resampler {
 
     /**
-     * Reduce by removing common prime factors.
+     * Represent the ratio of two integers.
      */
-    void reduce();
+    class IntegerRatio {
+    public:
+      IntegerRatio(int32_t numerator, int32_t denominator)
+              : mNumerator(numerator), mDenominator(denominator) {}
 
-    int32_t getNumerator() {
+      /**
+       * Reduce by removing common prime factors.
+       */
+      void reduce();
+
+      int32_t getNumerator() {
         return mNumerator;
-    }
+      }
 
-    int32_t getDenominator() {
+      int32_t getDenominator() {
         return mDenominator;
-    }
+      }
 
-private:
-    int32_t mNumerator;
-    int32_t mDenominator;
-};
+    private:
+      int32_t mNumerator;
+      int32_t mDenominator;
+    };
 
+  }
 } /* namespace RESAMPLER_OUTER_NAMESPACE::resampler */
 
 #endif //RESAMPLER_INTEGER_RATIO_H

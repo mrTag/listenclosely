@@ -38,8 +38,8 @@ SincResampler::SincResampler(const MultiChannelResampler::Builder &builder)
 
 void SincResampler::readFrame(float *frame) {
     // Clear accumulator for mixing.
-    std::fill(mSingleFrame.begin(), mSingleFrame.end(), 0.0);
-    std::fill(mSingleFrame2.begin(), mSingleFrame2.end(), 0.0);
+    std::fill(mSingleFrame.begin(), mSingleFrame.end(), 0.0f);
+    std::fill(mSingleFrame2.begin(), mSingleFrame2.end(), 0.0f);
 
     // Determine indices into coefficients table.
     const double tablePhase = getIntegerPhase() * mPhaseScaler;
@@ -63,7 +63,7 @@ void SincResampler::readFrame(float *frame) {
     }
 
     // Interpolate and copy to output.
-    const float fraction = tablePhase - indexLow;
+    const float fraction = (float)tablePhase - indexLow;
     for (int channel = 0; channel < getChannelCount(); channel++) {
         const float low = mSingleFrame[channel];
         const float high = mSingleFrame2[channel];

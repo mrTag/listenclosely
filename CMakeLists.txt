@@ -131,6 +131,7 @@ set( GODOT_CPP_SYSTEM_HEADERS ON CACHE BOOL "" FORCE )
 
 add_subdirectory( extern/godot-cpp )
 add_subdirectory( extern/opus )
+add_subdirectory( extern/oboe )
 
 set_target_properties( opus
     PROPERTIES
@@ -146,4 +147,5 @@ target_link_libraries( ${PROJECT_NAME}
     PRIVATE
         godot-cpp
         opus
+        oboe-resampler
 )

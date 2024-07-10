@@ -49,8 +49,8 @@ void SincResamplerStereo::writeFrame(const float *frame) {
 // Multiply input times windowed sinc function.
 void SincResamplerStereo::readFrame(float *frame) {
     // Clear accumulator for mixing.
-    std::fill(mSingleFrame.begin(), mSingleFrame.end(), 0.0);
-    std::fill(mSingleFrame2.begin(), mSingleFrame2.end(), 0.0);
+    std::fill(mSingleFrame.begin(), mSingleFrame.end(), 0.0f);
+    std::fill(mSingleFrame2.begin(), mSingleFrame2.end(), 0.0f);
 
     // Determine indices into coefficients table.
     double tablePhase = getIntegerPhase() * mPhaseScaler;
@@ -72,7 +72,7 @@ void SincResamplerStereo::readFrame(float *frame) {
     }
 
     // Interpolate and copy to output.
-    float fraction = tablePhase - index1;
+    float fraction = (float)tablePhase - index1;
     for (int channel = 0; channel < getChannelCount(); channel++) {
         float low = mSingleFrame[channel];
         float high = mSingleFrame2[channel];

@@ -10,6 +10,13 @@
 
 struct OpusEncoder;
 struct OpusDecoder;
+namespace oboe
+{
+    namespace resampler
+    {
+        class MultiChannelResampler;
+    }
+}
 
 class AudioStreamPlayerVoipExtension : public godot::Node
 {
@@ -22,6 +29,7 @@ private:
     // NOTE: opus has pretty strict requirements on the mix rate: 48000 or 24000 or 16000 or 12000
     // or 8000
     int mix_rate = 24000;
+    int godot_mix_rate = 48000;
     float buffer_length = 0.1f;
     int audio_package_duration_ms = 40;
 
@@ -35,7 +43,8 @@ private:
     float _current_loudness;
 
     int _num_out_of_order = 0;
-    DebugInfoWindow* _debugInfoWindow;
+    DebugInfoWindow *_debugInfoWindow;
+    oboe::resampler::MultiChannelResampler * _resampler;
 public:
     void _process( double delta ) override;
     void _enter_tree() override;

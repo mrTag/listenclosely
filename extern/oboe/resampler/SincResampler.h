@@ -19,32 +19,34 @@
 
 #include <memory>
 #include <sys/types.h>
-#include <unistd.h>
 
 #include "MultiChannelResampler.h"
 #include "ResamplerDefinitions.h"
 
-namespace RESAMPLER_OUTER_NAMESPACE::resampler {
+namespace RESAMPLER_OUTER_NAMESPACE
+{
+  namespace resampler {
 
-/**
- * Resampler that can interpolate between coefficients.
- * This can be used to support arbitrary ratios.
- */
-class SincResampler : public MultiChannelResampler {
-public:
-    explicit SincResampler(const MultiChannelResampler::Builder &builder);
+    /**
+     * Resampler that can interpolate between coefficients.
+     * This can be used to support arbitrary ratios.
+     */
+    class SincResampler : public MultiChannelResampler {
+    public:
+      explicit SincResampler(const MultiChannelResampler::Builder &builder);
 
-    virtual ~SincResampler() = default;
+      virtual ~SincResampler() = default;
 
-    void readFrame(float *frame) override;
+      void readFrame(float *frame) override;
 
-protected:
+    protected:
 
-    std::vector<float> mSingleFrame2; // for interpolation
-    int32_t            mNumRows = 0;
-    double             mPhaseScaler = 1.0;
-};
+      std::vector<float> mSingleFrame2; // for interpolation
+      int32_t            mNumRows = 0;
+      double             mPhaseScaler = 1.0;
+    };
 
+  }
 } /* namespace RESAMPLER_OUTER_NAMESPACE::resampler */
 
 #endif //RESAMPLER_SINC_RESAMPLER_H

@@ -19,29 +19,31 @@
 
 #include <memory>
 #include <sys/types.h>
-#include <unistd.h>
 
 #include "MultiChannelResampler.h"
 #include "ResamplerDefinitions.h"
 
-namespace RESAMPLER_OUTER_NAMESPACE::resampler {
+namespace RESAMPLER_OUTER_NAMESPACE
+{
+  namespace resampler {
 
-/**
- * Simple resampler that uses bi-linear interpolation.
- */
-class LinearResampler : public MultiChannelResampler {
-public:
-    explicit LinearResampler(const MultiChannelResampler::Builder &builder);
+    /**
+     * Simple resampler that uses bi-linear interpolation.
+     */
+    class LinearResampler : public MultiChannelResampler {
+    public:
+      explicit LinearResampler(const MultiChannelResampler::Builder &builder);
 
-    void writeFrame(const float *frame) override;
+      void writeFrame(const float *frame) override;
 
-    void readFrame(float *frame) override;
+      void readFrame(float *frame) override;
 
-private:
-    std::unique_ptr<float[]> mPreviousFrame;
-    std::unique_ptr<float[]> mCurrentFrame;
-};
+    private:
+      std::unique_ptr<float[]> mPreviousFrame;
+      std::unique_ptr<float[]> mCurrentFrame;
+    };
 
+  }
 } /* namespace RESAMPLER_OUTER_NAMESPACE::resampler */
 
 #endif //RESAMPLER_LINEAR_RESAMPLER_H

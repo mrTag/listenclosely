@@ -4,6 +4,8 @@
 
 #include <godot_cpp/classes/color_rect.hpp>
 #include <godot_cpp/classes/time.hpp>
+#include <godot_cpp/classes/display_server.hpp>
+
 
 void DebugInfoWindow::updateGraphs(  )
 {
@@ -56,7 +58,11 @@ void DebugInfoWindow::Initialize(const godot::String& debug_title, float graph_t
     set_process( true );
     set_process_mode( PROCESS_MODE_ALWAYS );
     set_title( debug_title );
-    set_initial_position( WINDOW_INITIAL_POSITION_CENTER_OTHER_SCREEN );
+    set_initial_position( WINDOW_INITIAL_POSITION_ABSOLUTE );
+    godot::Vector2i debug_window_pos(
+        godot::DisplayServer::get_singleton()->window_get_position( 0 ).x + godot::DisplayServer::get_singleton()->window_get_size( 0 ).x + 10,
+        godot::DisplayServer::get_singleton()->window_get_position( 0 ).y);
+    set_position( debug_window_pos );
     set_size( godot::Vector2i(500,500) );
     _graphTimeDuration = graph_time_duration;
 
@@ -143,10 +149,10 @@ void DebugInfoWindow::AddToGraph( const godot::String &id, float value )
     }
     else
     {
-        PolyLineControl* graphDrawArea = new PolyLineControl();
+        PolyLineControl* graphDrawArea = memnew(PolyLineControl());
         graphDrawArea->set_custom_minimum_size( godot::Vector2(0, 100) );
 
-        godot::ColorRect* bg = new godot::ColorRect();
+        godot::ColorRect* bg = memnew(godot::ColorRect());
         bg->set_draw_behind_parent( true );
         bg->set_anchors_preset( godot::Control::PRESET_FULL_RECT );
         bg->set_anchor( godot::SIDE_RIGHT, 1.0f );
@@ -156,7 +162,7 @@ void DebugInfoWindow::AddToGraph( const godot::String &id, float value )
         bg->set_color( godot::Color(1.0f, 1.0f, 1.0f, 0.1f) );
         graphDrawArea->add_child( bg );
 
-        godot::Label* label = new godot::Label();
+        godot::Label* label = memnew(godot::Label());
         label->set_anchors_preset( godot::Control::PRESET_TOP_WIDE );
         label->set_anchor( godot::SIDE_RIGHT, 1.0 );
         label->set_offset( godot::SIDE_BOTTOM, 23.0 );

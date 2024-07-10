@@ -18,24 +18,26 @@
 #define RESAMPLER_POLYPHASE_RESAMPLER_STEREO_H
 
 #include <sys/types.h>
-#include <unistd.h>
 
 #include "PolyphaseResampler.h"
 #include "ResamplerDefinitions.h"
 
-namespace RESAMPLER_OUTER_NAMESPACE::resampler {
+namespace RESAMPLER_OUTER_NAMESPACE
+{
+  namespace resampler {
 
-class PolyphaseResamplerStereo : public PolyphaseResampler {
-public:
-    explicit PolyphaseResamplerStereo(const MultiChannelResampler::Builder &builder);
+    class PolyphaseResamplerStereo : public PolyphaseResampler {
+    public:
+      explicit PolyphaseResamplerStereo(const MultiChannelResampler::Builder &builder);
 
-    virtual ~PolyphaseResamplerStereo() = default;
+      virtual ~PolyphaseResamplerStereo() = default;
 
-    void writeFrame(const float *frame) override;
+      void writeFrame(const float *frame) override;
 
-    void readFrame(float *frame) override;
-};
+      void readFrame(float *frame) override;
+    };
 
+  }
 } /* namespace RESAMPLER_OUTER_NAMESPACE::resampler */
 
 #endif //RESAMPLER_POLYPHASE_RESAMPLER_STEREO_H

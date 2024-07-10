@@ -20,34 +20,36 @@
 #include <memory>
 #include <vector>
 #include <sys/types.h>
-#include <unistd.h>
 
 #include "MultiChannelResampler.h"
 #include "ResamplerDefinitions.h"
 
-namespace RESAMPLER_OUTER_NAMESPACE::resampler {
-/**
- * Resampler that is optimized for a reduced ratio of sample rates.
- * All of the coefficients for each possible phase value are pre-calculated.
- */
-class PolyphaseResampler : public MultiChannelResampler {
-public:
+namespace RESAMPLER_OUTER_NAMESPACE
+{
+  namespace resampler {
     /**
-     *
-     * @param builder containing lots of parameters
+     * Resampler that is optimized for a reduced ratio of sample rates.
+     * All of the coefficients for each possible phase value are pre-calculated.
      */
-    explicit PolyphaseResampler(const MultiChannelResampler::Builder &builder);
+    class PolyphaseResampler : public MultiChannelResampler {
+    public:
+      /**
+       *
+       * @param builder containing lots of parameters
+       */
+      explicit PolyphaseResampler(const MultiChannelResampler::Builder &builder);
 
-    virtual ~PolyphaseResampler() = default;
+      virtual ~PolyphaseResampler() = default;
 
-    void readFrame(float *frame) override;
+      void readFrame(float *frame) override;
 
-protected:
+    protected:
 
-    int32_t                mCoefficientCursor = 0;
+      int32_t                mCoefficientCursor = 0;
 
-};
+    };
 
+  }
 } /* namespace RESAMPLER_OUTER_NAMESPACE::resampler */
 
 #endif //RESAMPLER_POLYPHASE_RESAMPLER_H

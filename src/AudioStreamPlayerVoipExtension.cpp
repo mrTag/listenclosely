@@ -11,6 +11,8 @@
 #include "godot_cpp/classes/multiplayer_peer.hpp"
 #include "godot_cpp/variant/utility_functions.hpp"
 #include "godot_cpp/classes/scene_tree.hpp"
+#include "godot_cpp/classes/display_server.hpp"
+#include <resampler/MultiChannelResampler.h>
 
 #include "opus.h"
 
@@ -49,30 +51,59 @@ void AudioStreamPlayerVoipExtension::_ready()
     conf["call_local"] = false;
     conf["channel"] = 9;
     rpc_config( "transfer_opus_packet_rpc", conf );
+
+    set_process( !godot::Engine::get_singleton()->is_editor_hint() );
 }
 
 void AudioStreamPlayerVoipExtension::_process( double delta )
 {
     // just in case we don't receive or send any samples: reduce the current_loudness
     _current_loudness -= (float)delta * _current_loudness / 2.0f;
+
     if ( _audioEffectCapture.is_valid() &&
-         _audioEffectCapture->can_get_buffer( audio_package_duration_ms * mix_rate / 1000 ) )
+         _audioEffectCapture->can_get_buffer( audio_package_duration_ms * godot_mix_rate / 1000 ) )
     {
         godot::PackedVector2Array stereoSampleBuffer =
-            _audioEffectCapture->get_buffer( audio_package_duration_ms * mix_rate / 1000 );
-        _sampleBuffer.resize( stereoSampleBuffer.size() );
+            _audioEffectCapture->get_buffer( audio_package_duration_ms * godot_mix_rate / 1000 );
+        _sampleBuffer.resize( stereoSampleBuffer.size() * 2 );
+        int numSamplesInSampleBuffer = 0;
         _current_loudness = 0;
-        for ( int i = 0; i < stereoSampleBuffer.size(); ++i )
+        if(_resampler != nullptr)
         {
-            _sampleBuffer[i] = stereoSampleBuffer[i].x;
-            _current_loudness += _sampleBuffer[i] * _sampleBuffer[i];
+            int inputSamplesLeft = (int)stereoSampleBuffer.size();
+            int inputIndex = 0;
+            int outputIndex = 0;
+            while(inputSamplesLeft > 0)
+            {
+                if(_resampler->isWriteNeeded())
+                {
+                    _resampler->writeNextFrame( &stereoSampleBuffer[inputIndex].x );
+                    inputIndex++;
+                    inputSamplesLeft--;
+                } else
+                {
+                    _resampler->readNextFrame( &_sampleBuffer[outputIndex] );
+                    _current_loudness += _sampleBuffer[outputIndex] * _sampleBuffer[outputIndex];
+                    outputIndex++;
+                    numSamplesInSampleBuffer++;
+                }
+            }
         }
-        _current_loudness = godot::Math::sqrt( _current_loudness / static_cast<float>( stereoSampleBuffer.size() ) );
+        else
+        {
+            for ( int i = 0; i < stereoSampleBuffer.size(); ++i )
+            {
+                _sampleBuffer[i] = stereoSampleBuffer[i].x;
+                _current_loudness += _sampleBuffer[i] * _sampleBuffer[i];
+            }
+            numSamplesInSampleBuffer = (int)stereoSampleBuffer.size();
+        }
+        _current_loudness = godot::Math::sqrt( _current_loudness / static_cast<float>( numSamplesInSampleBuffer ) );
         // we do the resizing here, so that we only use up ram, when we are actually using the
         // encoder.
         _encodeBuffer.resize( 150000 );
         int sizeOfEncodedPackage = opus_encode_float(
-            _opus_encoder, _sampleBuffer.ptr(), static_cast<int>( _sampleBuffer.size() ),
+            _opus_encoder, _sampleBuffer.ptr(), static_cast<int>( numSamplesInSampleBuffer ),
             _encodeBuffer.ptrw(), static_cast<int>( _encodeBuffer.size() ) );
         if ( sizeOfEncodedPackage <= 0 )
         {
@@ -89,7 +120,8 @@ void AudioStreamPlayerVoipExtension::_process( double delta )
         _debugInfoWindow->SetString( "buffer size", godot::itos(_audioEffectCapture->get_frames_available()) );
         _debugInfoWindow->AddToGraph( "loudness", _current_loudness);
     }
-    _debugInfoWindow->updateGraphs();
+    if(_debugInfoWindow != nullptr)
+        _debugInfoWindow->updateGraphs();
 }
 
 void AudioStreamPlayerVoipExtension::_enter_tree()
@@ -145,6 +177,8 @@ void AudioStreamPlayerVoipExtension::initialize()
     _debugInfoWindow = new DebugInfoWindow();
     _debugInfoWindow->Initialize( godot::String("Player ") + godot::itos( get_multiplayer_authority() ) + (is_multiplayer_authority() ? godot::String(" (me)") : godot::String(" (remote)") ));
     get_tree()->get_root()->add_child( _debugInfoWindow );
+    get_window()->grab_focus();
+
 
     // AudioStreamPlayer, AudioStreamPlayer2D and AudioStreamPlayer3D don't have a common ancestor
     // that we can use here. So we have to handle all 3 seperately if we want to support all 3.
@@ -198,6 +232,16 @@ void AudioStreamPlayerVoipExtension::initialize()
         _audioEffectCapture = audioserver->get_bus_effect( capture_bus_index, 0 );
         _audioEffectCapture->set_buffer_length( buffer_length );
 
+        godot_mix_rate = (int)audioserver->get_mix_rate();
+        if(godot_mix_rate != mix_rate)
+        {
+            _resampler = oboe::resampler::MultiChannelResampler::make(
+                1,
+                godot_mix_rate,
+                mix_rate,
+                oboe::resampler::MultiChannelResampler::Quality::High);
+        }
+
         godot::UtilityFunctions::print(
             "AudioStreamPlayerVoipExtension initialized as MicCapture successfully." );
     }
@@ -218,7 +262,18 @@ void AudioStreamPlayerVoipExtension::initialize()
         godot::Ref<godot::AudioStreamGenerator> audio_stream_generator;
         audio_stream_generator.instantiate();
         audio_stream_generator->set_buffer_length( buffer_length );
-        audio_stream_generator->set_mix_rate( audioserver->get_mix_rate() );
+
+        godot_mix_rate = (int)audioserver->get_mix_rate();
+        audio_stream_generator->set_mix_rate( mix_rate );
+        // if(godot_mixrate != mix_rate)
+        // {
+        //     _resampler = oboe::resampler::MultiChannelResampler::make(
+        //         1,
+        //         mix_rate,
+        //         godot_mixrate,
+        //         oboe::resampler::MultiChannelResampler::Quality::High);
+        // }
+
         if ( parentStreamPlayer != nullptr )
         {
             parentStreamPlayer->set_stream( audio_stream_generator );
@@ -281,7 +336,7 @@ void AudioStreamPlayerVoipExtension::transfer_opus_packet_rpc( unsigned char pac
         _num_out_of_order += 1;
     }
     _runningPacketNumber = packetNumber;
-    _sampleBuffer.resize( audio_package_duration_ms * mix_rate / 1000 );
+    _sampleBuffer.resize( 2 * audio_package_duration_ms * mix_rate / 1000 );
     int numDecodedSamples =
         opus_decode_float( _opus_decoder, packet.ptr(), static_cast<int>( packet.size() ),
                            _sampleBuffer.ptrw(), audio_package_duration_ms * mix_rate / 1000, 0 );
@@ -291,13 +346,6 @@ void AudioStreamPlayerVoipExtension::transfer_opus_packet_rpc( unsigned char pac
             "AudioStreamPlayerVoipExtension could not decode received packet. Opus errorcode: ",
             numDecodedSamples );
         return;
-    }
-    if ( numDecodedSamples != audio_package_duration_ms * mix_rate / 1000 )
-    {
-        godot::UtilityFunctions::printerr(
-            "AudioStreamPlayerVoipExtension Number of decoded samples doesn't match expectation!. "
-            "numDecodedSamples: ",
-            numDecodedSamples );
     }
     godot::PackedVector2Array bufferInStreamFormat;
     bufferInStreamFormat.resize( numDecodedSamples );

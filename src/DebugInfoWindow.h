@@ -10,8 +10,9 @@
 
 #include <godot_cpp/templates/hash_map.hpp>
 #include <godot_cpp/templates/local_vector.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
-// super simple helper class to get to just draw a polyline in the _draw...
+// super simple helper class to just draw a polyline in the _draw...
 class PolyLineControl : public godot::Control
 {
     GDCLASS( PolyLineControl, godot::Control )
@@ -35,7 +36,8 @@ public:
     godot::PackedVector2Array Polyline;
     void _draw() override
     {
-        draw_polyline( Polyline, godot::Color(1,1,1,1) );
+        if(Polyline.size() > 1)
+            draw_polyline( Polyline, godot::Color(1,1,1,1) );
     }
 };
 

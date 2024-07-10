@@ -141,16 +141,16 @@ void MultiChannelResampler::generateCoefficients(int32_t inputRate,
     const int numTapsHalf = getNumTaps() / 2; // numTaps must be even.
     const float numTapsHalfInverse = 1.0f / numTapsHalf;
     for (int i = 0; i < numRows; i++) {
-        float tapPhase = phase - numTapsHalf;
+        float tapPhase = (float)phase - numTapsHalf;
         float gain = 0.0; // sum of raw coefficients
         int gainCursor = coefficientIndex;
         for (int tap = 0; tap < getNumTaps(); tap++) {
-            float radians = tapPhase * M_PI;
+            float radians = tapPhase * 3.14159265359f;
 
 #if MCR_USE_KAISER
             float window = mKaiserWindow(tapPhase * numTapsHalfInverse);
 #else
-            float window = mCoshWindow(static_cast<double>(tapPhase) * numTapsHalfInverse);
+            float window = (float)mCoshWindow(static_cast<double>(tapPhase) * numTapsHalfInverse);
 #endif
             float coefficient = sinc(radians * cutoffScaler) * window;
             mCoefficients.at(coefficientIndex++) = coefficient;
@@ -163,7 +163,7 @@ void MultiChannelResampler::generateCoefficients(int32_t inputRate,
         }
 
         // Correct for gain variations.
-        float gainCorrection = 1.0 / gain; // normalize the gain
+        float gainCorrection = 1.0f / gain; // normalize the gain
         for (int tap = 0; tap < getNumTaps(); tap++) {
             mCoefficients.at(gainCursor + tap) *= gainCorrection;
         }
