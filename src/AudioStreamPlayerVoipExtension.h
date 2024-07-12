@@ -8,6 +8,10 @@
 
 #include "DebugInfoWindow.h"
 
+#include <godot_cpp/classes/audio_stream_player.hpp>
+#include <godot_cpp/classes/audio_stream_player2d.hpp>
+#include <godot_cpp/classes/audio_stream_player3d.hpp>
+
 struct OpusEncoder;
 struct OpusDecoder;
 namespace oboe
@@ -34,17 +38,20 @@ private:
     int audio_package_duration_ms = 40;
 
     OpusDecoder *_opus_decoder = nullptr;
+    godot::Vector<godot::Ref<godot::AudioStreamGeneratorPlayback>> _audioStreamGeneratorPlaybacks;
+    godot::Vector<uint64_t> _audioStreamGeneratorPlaybacksOwners;
+
     OpusEncoder *_opus_encoder = nullptr;
-    godot::Ref<godot::AudioStreamGeneratorPlayback> _audioStreamGeneratorPlayback;
     godot::Ref<godot::AudioEffectCapture> _audioEffectCapture;
+
     godot::PackedFloat32Array _sampleBuffer;
     godot::PackedByteArray _encodeBuffer;
     unsigned char _runningPacketNumber;
     float _current_loudness;
 
     int _num_out_of_order = 0;
-    DebugInfoWindow *_debugInfoWindow;
-    oboe::resampler::MultiChannelResampler * _resampler;
+    DebugInfoWindow *_debugInfoWindow = nullptr;
+    oboe::resampler::MultiChannelResampler * _resampler = nullptr;
 public:
     void _process( double delta ) override;
     void _enter_tree() override;
@@ -53,6 +60,12 @@ public:
 
     void transfer_opus_packet_rpc( unsigned char packetNumber, const godot::PackedByteArray &packet );
     void initialize();
+    void add_to_streamplayer(godot::AudioStreamPlayer* audioStreamPlayer);
+    void add_to_streamplayer2D(godot::AudioStreamPlayer2D* audioStreamPlayer2D);
+    void add_to_streamplayer3D(godot::AudioStreamPlayer3D* audioStreamPlayer3D);
+    void remove_from_streamplayer(godot::AudioStreamPlayer* audioStreamPlayer);
+    void remove_from_streamplayer2D(godot::AudioStreamPlayer2D* audioStreamPlayer2D);
+    void remove_from_streamplayer3D(godot::AudioStreamPlayer3D* audioStreamPlayer3D);
 
     [[nodiscard]] int get_mix_rate() const
     {
