@@ -169,19 +169,23 @@ void AudioStreamPlayerVoipExtension::_enter_tree()
         }
         else
         {
-            if ( audioserver->get_bus_effect_count( capture_bus_index ) != 1 ||
-                 !audioserver->get_bus_effect( capture_bus_index, 0 )
+            if ( audioserver->get_bus_effect_count( capture_bus_index ) == 0 ||
+                 !audioserver->get_bus_effect( capture_bus_index, audioserver->get_bus_effect_count( capture_bus_index )-1 )
                       ->is_class( "AudioEffectCapture" ) )
             {
-                // our MicCapture bus should have exactly one "AudioEffectCapture" Effect
+                // our MicCapture bus should have an "AudioEffectCapture" Effect as the last effect
                 godot::UtilityFunctions::printerr(
                     "AudioStreamPlayerVoipExtension detected invalid MicCapture audio bus "
                     "configuration. Attempting to fix it..." );
                 for ( int i = audioserver->get_bus_effect_count( capture_bus_index ) - 1; i >= 0;
                       --i )
                 {
-                    audioserver->remove_bus_effect( capture_bus_index, i );
+                    // we'll just remove all AudioEffectCapture effects...
+                    if(audioserver->get_bus_effect( capture_bus_index, i )
+                      ->is_class( "AudioEffectCapture" ))
+                        audioserver->remove_bus_effect( capture_bus_index, i );
                 }
+                // and create one to add as the last one.
                 godot::Ref<godot::AudioEffectCapture> audioEffectCapture;
                 audioEffectCapture.instantiate();
                 audioEffectCapture->set_name( "Capture" );
@@ -224,7 +228,7 @@ void AudioStreamPlayerVoipExtension::initialize()
         micCaptureStreamPlayer->play();
 
         int capture_bus_index = audioserver->get_bus_index( "MicCapture" );
-        _audioEffectCapture = audioserver->get_bus_effect( capture_bus_index, 0 );
+        _audioEffectCapture = audioserver->get_bus_effect( capture_bus_index, audioserver->get_bus_effect_count( capture_bus_index )-1 );
         _audioEffectCapture->set_buffer_length( buffer_length );
 
         godot_mix_rate = (int)audioserver->get_mix_rate();
@@ -301,10 +305,14 @@ void AudioStreamPlayerVoipExtension::add_to_streamplayer3D(
     // resampling is done via our own resampler, if necessary
     audio_stream_generator->set_mix_rate( godot_mix_rate );
     audio_stream_generator->set_buffer_length( buffer_length );
-    audioStreamPlayer3D->set_stream( audio_stream_generator );
-    audioStreamPlayer3D->play();
-    godot::Ref<godot::AudioStreamGeneratorPlayback> stream_playback =
-        audioStreamPlayer3D->get_stream_playback();
+    audioStreamPlayer3D->call("play_stream",  audio_stream_generator, 0, 0, 0 );
+    godot::Ref<godot::AudioStreamGeneratorPlayback> stream_playback;
+    // compatibility with godot_steam_audio extension: we need to get the "inner stream" playback
+    // in that case!
+    if (audioStreamPlayer3D->has_method("get_inner_stream_playback"))
+        stream_playback = audioStreamPlayer3D->call("get_inner_stream_playback");
+    else
+        stream_playback = audioStreamPlayer3D->get_stream_playback();
     _audioStreamGeneratorPlaybacks.append( stream_playback );
     _audioStreamGeneratorPlaybacksOwners.push_back( audioStreamPlayer3D->get_instance_id() );
 }
