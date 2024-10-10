@@ -64,6 +64,7 @@ void AudioStreamPlayerVoipExtension::_ready()
     conf["channel"] = 9;
     rpc_config( "transfer_opus_packet_rpc", conf );
 
+    set_process_mode( PROCESS_MODE_ALWAYS );
     set_process( !godot::Engine::get_singleton()->is_editor_hint() );
 }
 
@@ -79,9 +80,9 @@ void AudioStreamPlayerVoipExtension::_process( double delta )
             _audioEffectCapture->get_buffer( audio_package_duration_ms * godot_mix_rate / 1000 );
         while(_audioEffectCapture->get_frames_available() > audio_package_duration_ms * godot_mix_rate / 1000)
         {
-            godot::UtilityFunctions::printerr(
-                "AudioStreamPlayerVoipExtension audioEffectCapture buffer too full, discarding frames! available frames: ",
-                _audioEffectCapture->get_frames_available() );
+            // godot::UtilityFunctions::print_verbose(
+            //     "AudioStreamPlayerVoipExtension audioEffectCapture buffer too full, discarding frames! available frames: ",
+            //     _audioEffectCapture->get_frames_available() );
             _audioEffectCapture->get_buffer(audio_package_duration_ms * godot_mix_rate / 1000);
         }
         _sampleBuffer.resize( stereoSampleBuffer.size() * 2 );
@@ -134,6 +135,24 @@ void AudioStreamPlayerVoipExtension::_process( double delta )
         _encodeBuffer.resize( sizeOfEncodedPackage );
         _runningPacketNumber += 1;
         rpc( "transfer_opus_packet_rpc", _runningPacketNumber, _encodeBuffer );
+
+        // when we (as the sender!) also have players added, we can simply push our captured input
+        // on those. (needed, for example so that you can hear your own voice through a walkie talkie)
+        for(auto& audioStreamGeneratorPlayback : _audioStreamGeneratorPlaybacks)
+        {
+            bool pushed_successfully = audioStreamGeneratorPlayback->push_buffer( stereoSampleBuffer );
+            if ( !pushed_successfully )
+            {
+                // godot::UtilityFunctions::print_verbose(
+                //     "AudioStreamPlayerVoipExtension could not push received audio buffer into the "
+                //     "AudioStreamGeneratorPlayback. Free Space: ",
+                //     audioStreamGeneratorPlayback->get_frames_available(),
+                //     " needed space: ", bufferInStreamFormat.size() );
+                // let's try to push at least as much as possible...
+                stereoSampleBuffer.resize( audioStreamGeneratorPlayback->get_frames_available() );
+                audioStreamGeneratorPlayback->push_buffer( stereoSampleBuffer );
+            }
+        }
 
         if(_debugInfoWindow != nullptr)
         {
@@ -384,9 +403,9 @@ void AudioStreamPlayerVoipExtension::transfer_opus_packet_rpc( unsigned char pac
     }
     if ( packetNumber != (_runningPacketNumber + 1) % 256 )
     {
-        godot::UtilityFunctions::print(
-            "AudioStreamPlayerVoipExtension received out of order Opus Packet. packetNumber: ",
-            packetNumber, " expected: ", (_runningPacketNumber + 1) % 256 );
+        // godot::UtilityFunctions::print_verbose(
+        //     "AudioStreamPlayerVoipExtension received out of order Opus Packet. packetNumber: ",
+        //     packetNumber, " expected: ", (_runningPacketNumber + 1) % 256 );
         _num_out_of_order += 1;
     }
     _runningPacketNumber = packetNumber;
@@ -444,11 +463,11 @@ void AudioStreamPlayerVoipExtension::transfer_opus_packet_rpc( unsigned char pac
         bool pushed_successfully = audioStreamGeneratorPlayback->push_buffer( bufferInStreamFormat );
         if ( !pushed_successfully )
         {
-            godot::UtilityFunctions::printerr(
-                "AudioStreamPlayerVoipExtension could not push received audio buffer into the "
-                "AudioStreamGeneratorPlayback. Free Space: ",
-                audioStreamGeneratorPlayback->get_frames_available(),
-                " needed space: ", bufferInStreamFormat.size() );
+            // godot::UtilityFunctions::print_verbose(
+            //     "AudioStreamPlayerVoipExtension could not push received audio buffer into the "
+            //     "AudioStreamGeneratorPlayback. Free Space: ",
+            //     audioStreamGeneratorPlayback->get_frames_available(),
+            //     " needed space: ", bufferInStreamFormat.size() );
             // let's try to push at least as much as possible...
             bufferInStreamFormat.resize( audioStreamGeneratorPlayback->get_frames_available() );
             audioStreamGeneratorPlayback->push_buffer( bufferInStreamFormat );
