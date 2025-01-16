@@ -138,14 +138,10 @@ set_target_properties( opus
         POSITION_INDEPENDENT_CODE ON
 )
 
-set_target_properties( godot-cpp
-    PROPERTIES
-        CXX_VISIBILITY_PRESET hidden    # visibility needs to be the same as the main library
-)
 
 target_link_libraries( ${PROJECT_NAME}
     PRIVATE
-        godot-cpp
+        godot-cpp.template_release
         opus
         oboe-resampler
 )
