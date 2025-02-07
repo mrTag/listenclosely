@@ -12,6 +12,8 @@
 #include "godot_cpp/variant/utility_functions.hpp"
 #include "godot_cpp/classes/scene_tree.hpp"
 #include "godot_cpp/classes/display_server.hpp"
+#include "godot_cpp/classes/os.hpp"
+#include "godot_cpp/variant/callable.hpp"
 #include <resampler/MultiChannelResampler.h>
 
 #include "opus.h"
@@ -22,6 +24,8 @@ void AudioStreamPlayerVoipExtension::_bind_methods()
                                  &AudioStreamPlayerVoipExtension::transfer_opus_packet_rpc );
     godot::ClassDB::bind_method( godot::D_METHOD( "initialize" ),
                                  &AudioStreamPlayerVoipExtension::initialize );
+    godot::ClassDB::bind_method( godot::D_METHOD( "process_and_send_buffer_thread" ),
+                                 &AudioStreamPlayerVoipExtension::process_microphone_buffer_thread );
     godot::ClassDB::bind_method( godot::D_METHOD( "add_to_streamplayer" ),
                                  &AudioStreamPlayerVoipExtension::add_to_streamplayer );
     godot::ClassDB::bind_method( godot::D_METHOD( "add_to_streamplayer2D" ),
@@ -64,105 +68,157 @@ void AudioStreamPlayerVoipExtension::_ready()
     conf["channel"] = 9;
     rpc_config( "transfer_opus_packet_rpc", conf );
 
+    _encodeBufferMutex.instantiate();
     set_process_mode( PROCESS_MODE_ALWAYS );
     set_process( !godot::Engine::get_singleton()->is_editor_hint() );
 }
 
-void AudioStreamPlayerVoipExtension::_process( double delta )
+void AudioStreamPlayerVoipExtension::process_microphone_buffer_thread()
 {
-    // just in case we don't receive or send any samples: reduce the current_loudness
-    _current_loudness -= (float)delta * _current_loudness / 2.0f;
-
-    if ( _audioEffectCapture.is_valid() &&
-         _audioEffectCapture->can_get_buffer( audio_package_duration_ms * godot_mix_rate / 1000 ) )
+    while ( !_cancel_process_thread )
     {
-        godot::PackedVector2Array stereoSampleBuffer =
-            _audioEffectCapture->get_buffer( audio_package_duration_ms * godot_mix_rate / 1000 );
-        while(_audioEffectCapture->get_frames_available() > audio_package_duration_ms * godot_mix_rate / 1000)
+        if ( _audioEffectCapture.is_valid() &&
+             _audioEffectCapture->can_get_buffer( audio_package_duration_ms * godot_mix_rate /
+                                                  1000 ) )
         {
-            // godot::UtilityFunctions::print_verbose(
-            //     "AudioStreamPlayerVoipExtension audioEffectCapture buffer too full, discarding frames! available frames: ",
-            //     _audioEffectCapture->get_frames_available() );
-            _audioEffectCapture->get_buffer(audio_package_duration_ms * godot_mix_rate / 1000);
-        }
-        _sampleBuffer.resize( stereoSampleBuffer.size() * 2 );
-        int numSamplesInSampleBuffer = 0;
-        _current_loudness = 0;
-        if(_resampler != nullptr)
-        {
-            int inputSamplesLeft = (int)stereoSampleBuffer.size();
-            int inputIndex = 0;
-            int outputIndex = 0;
-            while(inputSamplesLeft > 0)
+            godot::PackedVector2Array stereoSampleBuffer = _audioEffectCapture->get_buffer(
+                audio_package_duration_ms * godot_mix_rate / 1000 );
+            // while(_audioEffectCapture->get_frames_available() > audio_package_duration_ms *
+            // godot_mix_rate / 1000)
+            // {
+            //     // godot::UtilityFunctions::print_verbose(
+            //     //     "AudioStreamPlayerVoipExtension audioEffectCapture buffer too full,
+            //     discarding frames! available frames: ",
+            //     //     _audioEffectCapture->get_frames_available() );
+            //     _audioEffectCapture->get_buffer(audio_package_duration_ms * godot_mix_rate /
+            //     1000);
+            // }
+            _sampleBuffer.resize( stereoSampleBuffer.size() * 2 );
+            int numSamplesInSampleBuffer = 0;
+            _current_loudness = 0;
+            if ( _resampler != nullptr )
             {
-                if(_resampler->isWriteNeeded())
+                int inputSamplesLeft = (int)stereoSampleBuffer.size();
+                int inputIndex = 0;
+                int outputIndex = 0;
+                while ( inputSamplesLeft > 0 )
                 {
-                    _resampler->writeNextFrame( &stereoSampleBuffer[inputIndex].x );
-                    inputIndex++;
-                    inputSamplesLeft--;
-                } else
+                    if ( _resampler->isWriteNeeded() )
+                    {
+                        _resampler->writeNextFrame( &stereoSampleBuffer[inputIndex].x );
+                        inputIndex++;
+                        inputSamplesLeft--;
+                    }
+                    else
+                    {
+                        _resampler->readNextFrame( &_sampleBuffer[outputIndex] );
+                        _current_loudness +=
+                            _sampleBuffer[outputIndex] * _sampleBuffer[outputIndex];
+                        outputIndex++;
+                        numSamplesInSampleBuffer++;
+                    }
+                }
+            }
+            else
+            {
+                for ( int i = 0; i < stereoSampleBuffer.size(); ++i )
                 {
-                    _resampler->readNextFrame( &_sampleBuffer[outputIndex] );
-                    _current_loudness += _sampleBuffer[outputIndex] * _sampleBuffer[outputIndex];
-                    outputIndex++;
-                    numSamplesInSampleBuffer++;
+                    _sampleBuffer[i] = stereoSampleBuffer[i].x;
+                    _current_loudness += _sampleBuffer[i] * _sampleBuffer[i];
+                }
+                numSamplesInSampleBuffer = (int)stereoSampleBuffer.size();
+            }
+            _current_loudness = godot::Math::sqrt( _current_loudness /
+                                                   static_cast<float>( numSamplesInSampleBuffer ) );
+
+            _encodeBufferMutex->lock();
+            int encodeBufferIndex = -1;
+            if (_encodeBuffersReadyToBeSent.size() >= _encodeBuffers.size())
+            {
+                if (_encodeBuffers.size() > 20)
+                    godot::UtilityFunctions::printerr( "AudioStreamPlayerVoipExtension microphone buffering thread "
+                                                   "has too many packets in its backlog, microphone degradation will occur.");
+                else
+                {
+                    _encodeBuffers.push_back( {} );
+                    encodeBufferIndex = _encodeBuffers.size() - 1;
+                }
+            }
+            else
+            {
+                for ( int i = 0; i < _encodeBuffers.size(); ++i )
+                {
+                    if (_encodeBuffersReadyToBeSent.has( i ))
+                        continue;
+                    encodeBufferIndex = i;
+                    break;
+                }
+            }
+            _encodeBufferMutex->unlock();
+            if (encodeBufferIndex != -1)
+            {
+                _encodeBuffers[encodeBufferIndex].resize( 150000 );
+                int sizeOfEncodedPackage = opus_encode_float(
+                    _opus_encoder, _sampleBuffer.ptr(), static_cast<int>( numSamplesInSampleBuffer ),
+                    _encodeBuffers[encodeBufferIndex].ptrw(), static_cast<int>( _encodeBuffers[encodeBufferIndex].size() ) );
+                if ( sizeOfEncodedPackage > 0 )
+                {
+                    _encodeBuffers[encodeBufferIndex].resize( sizeOfEncodedPackage );
+                    _encodeBufferMutex->lock();
+                    _encodeBuffersReadyToBeSent.append( encodeBufferIndex );
+                    _encodeBufferMutex->unlock();
+                }
+                else
+                {
+                    godot::UtilityFunctions::printerr( "AudioStreamPlayerVoipExtension could not "
+                                                       "encode captured audio. Opus errorcode: ",
+                                                       sizeOfEncodedPackage );
+                }
+            }
+
+            // when we (as the sender!) also have players added, we can simply push our captured
+            // input on those. (needed, for example so that you can hear your own voice through a
+            // walkie talkie)
+            for ( auto &audioStreamGeneratorPlayback : _audioStreamGeneratorPlaybacks )
+            {
+                bool pushed_successfully =
+                    audioStreamGeneratorPlayback->push_buffer( stereoSampleBuffer );
+                if ( !pushed_successfully )
+                {
+                    // godot::UtilityFunctions::print_verbose(
+                    //     "AudioStreamPlayerVoipExtension could not push received audio buffer into
+                    //     the " "AudioStreamGeneratorPlayback. Free Space: ",
+                    //     audioStreamGeneratorPlayback->get_frames_available(),
+                    //     " needed space: ", bufferInStreamFormat.size() );
+                    // let's try to push at least as much as possible...
+                    stereoSampleBuffer.resize(
+                        audioStreamGeneratorPlayback->get_frames_available() );
+                    audioStreamGeneratorPlayback->push_buffer( stereoSampleBuffer );
                 }
             }
         }
-        else
-        {
-            for ( int i = 0; i < stereoSampleBuffer.size(); ++i )
-            {
-                _sampleBuffer[i] = stereoSampleBuffer[i].x;
-                _current_loudness += _sampleBuffer[i] * _sampleBuffer[i];
-            }
-            numSamplesInSampleBuffer = (int)stereoSampleBuffer.size();
-        }
-        _current_loudness = godot::Math::sqrt( _current_loudness / static_cast<float>( numSamplesInSampleBuffer ) );
-        // we do the resizing here, so that we only use up ram, when we are actually using the
-        // encoder.
-        _encodeBuffer.resize( 150000 );
-        int sizeOfEncodedPackage = opus_encode_float(
-            _opus_encoder, _sampleBuffer.ptr(), static_cast<int>( numSamplesInSampleBuffer ),
-            _encodeBuffer.ptrw(), static_cast<int>( _encodeBuffer.size() ) );
-        if ( sizeOfEncodedPackage <= 0 )
-        {
-            godot::UtilityFunctions::printerr(
-                "AudioStreamPlayerVoipExtension could not encode captured audio. Opus errorcode: ",
-                sizeOfEncodedPackage );
-            return;
-        }
-        _encodeBuffer.resize( sizeOfEncodedPackage );
-        _runningPacketNumber += 1;
-        rpc( "transfer_opus_packet_rpc", _runningPacketNumber, _encodeBuffer );
 
-        // when we (as the sender!) also have players added, we can simply push our captured input
-        // on those. (needed, for example so that you can hear your own voice through a walkie talkie)
-        for(auto& audioStreamGeneratorPlayback : _audioStreamGeneratorPlaybacks)
-        {
-            bool pushed_successfully = audioStreamGeneratorPlayback->push_buffer( stereoSampleBuffer );
-            if ( !pushed_successfully )
-            {
-                // godot::UtilityFunctions::print_verbose(
-                //     "AudioStreamPlayerVoipExtension could not push received audio buffer into the "
-                //     "AudioStreamGeneratorPlayback. Free Space: ",
-                //     audioStreamGeneratorPlayback->get_frames_available(),
-                //     " needed space: ", bufferInStreamFormat.size() );
-                // let's try to push at least as much as possible...
-                stereoSampleBuffer.resize( audioStreamGeneratorPlayback->get_frames_available() );
-                audioStreamGeneratorPlayback->push_buffer( stereoSampleBuffer );
-            }
-        }
-
-        if(_debugInfoWindow != nullptr)
-        {
-            _debugInfoWindow->SetString( "bytes", godot::itos(sizeOfEncodedPackage ));
-            _debugInfoWindow->SetString( "buffer size", godot::itos(_audioEffectCapture->get_frames_available()) );
-            _debugInfoWindow->AddToGraph( "loudness", _current_loudness);
-        }
+        godot::OS::get_singleton()->delay_msec( 1 );
     }
-    if(_debugInfoWindow != nullptr)
-        _debugInfoWindow->updateGraphs();
+}
+
+void AudioStreamPlayerVoipExtension::_process( double p_delta )
+{
+    Node::_process( p_delta );
+
+    _encodeBufferMutex->lock();
+    while(!_encodeBuffersReadyToBeSent.is_empty())
+    {
+        int sendEncodeBufferIndex = _encodeBuffersReadyToBeSent[0];
+        _encodeBufferMutex->unlock();
+
+        _runningPacketNumber += 1;
+        rpc("transfer_opus_packet_rpc", _runningPacketNumber,
+                       _encodeBuffers[sendEncodeBufferIndex] );
+        _encodeBufferMutex->lock();
+        _encodeBuffersReadyToBeSent.remove_at( 0 );
+    }
+    _encodeBufferMutex->unlock();
 }
 
 void AudioStreamPlayerVoipExtension::_enter_tree()
@@ -241,7 +297,8 @@ void AudioStreamPlayerVoipExtension::initialize()
         }
         // To record the microphone, we'll need a simple AudioStreamPlayer. So we just create it:
         godot::AudioStreamPlayer *micCaptureStreamPlayer = memnew( godot::AudioStreamPlayer() );
-        micCaptureStreamPlayer->set_stream( new godot::AudioStreamMicrophone() );
+        godot::AudioStreamMicrophone *micCaptureStream = memnew( godot::AudioStreamMicrophone() );
+        micCaptureStreamPlayer->set_stream( micCaptureStream );
         micCaptureStreamPlayer->set_bus( "MicCapture" );
         add_child( micCaptureStreamPlayer );
         micCaptureStreamPlayer->play();
@@ -257,6 +314,10 @@ void AudioStreamPlayerVoipExtension::initialize()
                 1, godot_mix_rate, mix_rate,
                 oboe::resampler::MultiChannelResampler::Quality::High );
         }
+
+        _cancel_process_thread = false;
+        _process_send_buffer_thread.instantiate();
+        _process_send_buffer_thread->start( godot::Callable(this, "process_and_send_buffer_thread") );
 
         godot::UtilityFunctions::print(
             "AudioStreamPlayerVoipExtension initialized as MicCapture successfully." );
@@ -370,6 +431,12 @@ void AudioStreamPlayerVoipExtension::_exit_tree()
 {
     godot::UtilityFunctions::print(
         "AudioStreamPlayerVoipExtension exit_tree: cleaning up opus and audiostream" );
+    if (_process_send_buffer_thread.is_valid() && _process_send_buffer_thread->is_alive())
+    {
+        _cancel_process_thread = true;
+        _process_send_buffer_thread->wait_to_finish();
+        _process_send_buffer_thread.unref();
+    }
     if ( _opus_decoder != nullptr )
     {
         opus_decoder_destroy( _opus_decoder );

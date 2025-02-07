@@ -4,6 +4,8 @@
 #include "godot_cpp/classes/audio_effect_capture.hpp"
 #include "godot_cpp/classes/audio_stream_generator_playback.hpp"
 #include "godot_cpp/classes/node.hpp"
+#include "godot_cpp/classes/thread.hpp"
+#include "godot_cpp/classes/mutex.hpp"
 #include "godot_cpp/templates/local_vector.hpp"
 
 #include "DebugInfoWindow.h"
@@ -44,16 +46,22 @@ private:
     OpusEncoder *_opus_encoder = nullptr;
     godot::Ref<godot::AudioEffectCapture> _audioEffectCapture;
 
+    godot::Ref<godot::Thread> _process_send_buffer_thread;
+    godot::LocalVector<godot::PackedByteArray> _encodeBuffers;
+    godot::PackedInt32Array _encodeBuffersReadyToBeSent;
+    godot::Ref<godot::Mutex> _encodeBufferMutex;
+
     godot::PackedFloat32Array _sampleBuffer;
-    godot::PackedByteArray _encodeBuffer;
     unsigned char _runningPacketNumber;
     float _current_loudness;
+    bool _cancel_process_thread;
 
     int _num_out_of_order = 0;
     DebugInfoWindow *_debugInfoWindow = nullptr;
     oboe::resampler::MultiChannelResampler * _resampler = nullptr;
 public:
-    void _process( double delta ) override;
+    void process_microphone_buffer_thread();
+    void _process( double p_delta ) override;
     void _enter_tree() override;
     void _exit_tree() override;
     void _ready() override;
