@@ -62,6 +62,7 @@ private:
 public:
     void process_microphone_buffer_thread();
     void _process( double p_delta ) override;
+    void check_for_buffer_underruns_thread();
     void _enter_tree() override;
     void _exit_tree() override;
     void _ready() override;

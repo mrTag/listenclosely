@@ -26,6 +26,8 @@ void AudioStreamPlayerVoipExtension::_bind_methods()
                                  &AudioStreamPlayerVoipExtension::initialize );
     godot::ClassDB::bind_method( godot::D_METHOD( "process_and_send_buffer_thread" ),
                                  &AudioStreamPlayerVoipExtension::process_microphone_buffer_thread );
+    godot::ClassDB::bind_method( godot::D_METHOD( "check_for_buffer_underruns_thread" ),
+                                 &AudioStreamPlayerVoipExtension::check_for_buffer_underruns_thread );
     godot::ClassDB::bind_method( godot::D_METHOD( "add_to_streamplayer" ),
                                  &AudioStreamPlayerVoipExtension::add_to_streamplayer );
     godot::ClassDB::bind_method( godot::D_METHOD( "add_to_streamplayer2D" ),
@@ -135,11 +137,7 @@ void AudioStreamPlayerVoipExtension::process_microphone_buffer_thread()
             int encodeBufferIndex = -1;
             if (_encodeBuffersReadyToBeSent.size() >= _encodeBuffers.size())
             {
-                if (_encodeBuffers.size() > 20)
-                    godot::UtilityFunctions::printerr( "AudioStreamPlayerVoipExtension microphone buffering thread "
-                                                   "has too many packets in its backlog, microphone degradation will occur.");
-                else
-                {
+                if (_encodeBuffers.size() < 10) {
                     _encodeBuffers.push_back( {} );
                     encodeBufferIndex = _encodeBuffers.size() - 1;
                 }
@@ -221,6 +219,30 @@ void AudioStreamPlayerVoipExtension::_process( double p_delta )
     _encodeBufferMutex->unlock();
 }
 
+void AudioStreamPlayerVoipExtension::check_for_buffer_underruns_thread() {
+    godot::PackedVector2Array silence;
+    silence.resize(2 * audio_package_duration_ms * godot_mix_rate / 1000);
+    silence.fill( godot::Vector2( 0, 0 ) );
+    while ( !_cancel_process_thread )
+    {
+        // check for buffer underruns and push back silence as a quick fix...
+        for(auto& audioStreamGeneratorPlayback : _audioStreamGeneratorPlaybacks)
+        {
+            // the get_frames_available is basically how much free space the buffer has!
+            // so a buffer underrun will occur when that number gets close to the total
+            // buffer size!
+            int total_buffer_size = (int)(buffer_length * (float)godot_mix_rate);
+            int num_samples_in_buffer = total_buffer_size - audioStreamGeneratorPlayback->get_frames_available();
+            if (num_samples_in_buffer < audio_package_duration_ms * godot_mix_rate / 1000 / 4)
+            {
+                // godot::UtilityFunctions::print_verbose( "AudioStreamPlayerVoipExtension Buffer underrun detected! Pushing two packages of silence.");
+                audioStreamGeneratorPlayback->push_buffer(silence);
+            }
+        }
+        godot::OS::get_singleton()->delay_msec( 1 );
+    }
+}
+
 void AudioStreamPlayerVoipExtension::_enter_tree()
 {
     auto *audioserver = godot::AudioServer::get_singleton();
@@ -239,7 +261,7 @@ void AudioStreamPlayerVoipExtension::_enter_tree()
             godot::Ref<godot::AudioEffectCapture> audioEffectCapture;
             audioEffectCapture.instantiate();
             audioEffectCapture->set_name( "Capture" );
-            audioEffectCapture->set_buffer_length( buffer_length );
+            audioEffectCapture->set_buffer_length( buffer_length * 1.5f );
             audioserver->add_bus_effect( capture_bus_index, audioEffectCapture );
         }
         else
@@ -344,6 +366,9 @@ void AudioStreamPlayerVoipExtension::initialize()
                 1, mix_rate, godot_mix_rate,
                 oboe::resampler::MultiChannelResampler::Quality::High );
         }
+
+        _process_send_buffer_thread.instantiate();
+        _process_send_buffer_thread->start( godot::Callable(this, "check_for_buffer_underruns_thread") );
 
         godot::UtilityFunctions::print(
             "AudioStreamPlayerVoipExtension initialized as AudioStreamGenerator successfully." );
