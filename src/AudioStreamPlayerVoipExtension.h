@@ -53,6 +53,7 @@ private:
 
     godot::PackedFloat32Array _sampleBuffer;
     unsigned char _runningPacketNumber;
+    bool _first_packet = true;
     float _current_loudness;
     bool _cancel_process_thread;
 
@@ -62,9 +63,9 @@ private:
 public:
     void process_microphone_buffer_thread();
     void _process( double p_delta ) override;
-    void check_for_buffer_underruns_thread();
     void _enter_tree() override;
     void _exit_tree() override;
+    bool decode_and_push_to_players( const uint8_t *packet_data, int64_t packet_size );
     void _ready() override;
 
     void transfer_opus_packet_rpc( unsigned char packetNumber, const godot::PackedByteArray &packet );

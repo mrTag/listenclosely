@@ -26,8 +26,6 @@ void AudioStreamPlayerVoipExtension::_bind_methods()
                                  &AudioStreamPlayerVoipExtension::initialize );
     godot::ClassDB::bind_method( godot::D_METHOD( "process_and_send_buffer_thread" ),
                                  &AudioStreamPlayerVoipExtension::process_microphone_buffer_thread );
-    godot::ClassDB::bind_method( godot::D_METHOD( "check_for_buffer_underruns_thread" ),
-                                 &AudioStreamPlayerVoipExtension::check_for_buffer_underruns_thread );
     godot::ClassDB::bind_method( godot::D_METHOD( "add_to_streamplayer" ),
                                  &AudioStreamPlayerVoipExtension::add_to_streamplayer );
     godot::ClassDB::bind_method( godot::D_METHOD( "add_to_streamplayer2D" ),
@@ -65,7 +63,7 @@ void AudioStreamPlayerVoipExtension::_ready()
 {
     godot::Dictionary conf;
     conf["rpc_mode"] = godot::MultiplayerAPI::RPCMode::RPC_MODE_AUTHORITY;
-    conf["transfer_mode"] = godot::MultiplayerPeer::TransferMode::TRANSFER_MODE_UNRELIABLE;
+    conf["transfer_mode"] = godot::MultiplayerPeer::TransferMode::TRANSFER_MODE_UNRELIABLE_ORDERED;
     conf["call_local"] = false;
     conf["channel"] = 9;
     rpc_config( "transfer_opus_packet_rpc", conf );
@@ -219,30 +217,6 @@ void AudioStreamPlayerVoipExtension::_process( double p_delta )
     _encodeBufferMutex->unlock();
 }
 
-void AudioStreamPlayerVoipExtension::check_for_buffer_underruns_thread() {
-    godot::PackedVector2Array silence;
-    silence.resize(2 * audio_package_duration_ms * godot_mix_rate / 1000);
-    silence.fill( godot::Vector2( 0, 0 ) );
-    while ( !_cancel_process_thread )
-    {
-        // check for buffer underruns and push back silence as a quick fix...
-        for(auto& audioStreamGeneratorPlayback : _audioStreamGeneratorPlaybacks)
-        {
-            // the get_frames_available is basically how much free space the buffer has!
-            // so a buffer underrun will occur when that number gets close to the total
-            // buffer size!
-            int total_buffer_size = (int)(buffer_length * (float)godot_mix_rate);
-            int num_samples_in_buffer = total_buffer_size - audioStreamGeneratorPlayback->get_frames_available();
-            if (num_samples_in_buffer < audio_package_duration_ms * godot_mix_rate / 1000 / 4)
-            {
-                // godot::UtilityFunctions::print_verbose( "AudioStreamPlayerVoipExtension Buffer underrun detected! Pushing two packages of silence.");
-                audioStreamGeneratorPlayback->push_buffer(silence);
-            }
-        }
-        godot::OS::get_singleton()->delay_msec( 1 );
-    }
-}
-
 void AudioStreamPlayerVoipExtension::_enter_tree()
 {
     auto *audioserver = godot::AudioServer::get_singleton();
@@ -367,8 +341,7 @@ void AudioStreamPlayerVoipExtension::initialize()
                 oboe::resampler::MultiChannelResampler::Quality::High );
         }
 
-        _process_send_buffer_thread.instantiate();
-        _process_send_buffer_thread->start( godot::Callable(this, "check_for_buffer_underruns_thread") );
+        _first_packet = true;
 
         godot::UtilityFunctions::print(
             "AudioStreamPlayerVoipExtension initialized as AudioStreamGenerator successfully." );
@@ -456,7 +429,7 @@ void AudioStreamPlayerVoipExtension::_exit_tree()
 {
     godot::UtilityFunctions::print(
         "AudioStreamPlayerVoipExtension exit_tree: cleaning up opus and audiostream" );
-    if (_process_send_buffer_thread.is_valid() && _process_send_buffer_thread->is_alive())
+    if ( _process_send_buffer_thread.is_valid() && _process_send_buffer_thread->is_alive() )
     {
         _cancel_process_thread = true;
         _process_send_buffer_thread->wait_to_finish();
@@ -473,7 +446,7 @@ void AudioStreamPlayerVoipExtension::_exit_tree()
     _opus_decoder = nullptr;
     _opus_encoder = nullptr;
     _audioEffectCapture = godot::Variant();
-    if(_resampler != nullptr)
+    if ( _resampler != nullptr )
     {
         delete _resampler;
         _resampler = nullptr;
@@ -481,56 +454,39 @@ void AudioStreamPlayerVoipExtension::_exit_tree()
     _audioStreamGeneratorPlaybacks.clear();
 }
 
-void AudioStreamPlayerVoipExtension::transfer_opus_packet_rpc( unsigned char packetNumber,
-                                                            const godot::PackedByteArray &packet )
+bool AudioStreamPlayerVoipExtension::decode_and_push_to_players( const uint8_t *packet_data,
+                                                                 int64_t packet_size )
 {
-    // this function was called by the rpc system because a packet was sent to us
-    // make sure that this instance is prepared to receive the packet!
-    if ( _opus_decoder == nullptr )
-    {
-        godot::UtilityFunctions::printerr(
-            "AudioStreamPlayerVoipExtension received Opus Packet, but is not ready for it! "
-            "(_audioStreamGeneratorPlayback or _opus_decoder is null)" );
-        return;
-    }
-    if ( packetNumber != (_runningPacketNumber + 1) % 256 )
-    {
-        // godot::UtilityFunctions::print_verbose(
-        //     "AudioStreamPlayerVoipExtension received out of order Opus Packet. packetNumber: ",
-        //     packetNumber, " expected: ", (_runningPacketNumber + 1) % 256 );
-        _num_out_of_order += 1;
-    }
-    _runningPacketNumber = packetNumber;
-    _sampleBuffer.resize( 2 * audio_package_duration_ms * mix_rate / 1000 );
     int numDecodedSamples =
-        opus_decode_float( _opus_decoder, packet.ptr(), static_cast<int>( packet.size() ),
+        opus_decode_float( _opus_decoder, packet_data, static_cast<int>( packet_size ),
                            _sampleBuffer.ptrw(), audio_package_duration_ms * mix_rate / 1000, 0 );
     if ( numDecodedSamples <= 0 )
     {
         godot::UtilityFunctions::printerr(
             "AudioStreamPlayerVoipExtension could not decode received packet. Opus errorcode: ",
             numDecodedSamples );
-        return;
+        return false;
     }
     godot::PackedVector2Array bufferInStreamFormat;
     int numSamplesInBuffer = 0;
-    if(_resampler != nullptr)
+    if ( _resampler != nullptr )
     {
         int inputSamplesLeft = (int)numDecodedSamples;
         int inputIndex = 0;
         int outputIndex = 0;
-        while(inputSamplesLeft > 0)
+        while ( inputSamplesLeft > 0 )
         {
-            if(_resampler->isWriteNeeded())
+            if ( _resampler->isWriteNeeded() )
             {
                 _resampler->writeNextFrame( &_sampleBuffer[inputIndex] );
                 inputIndex++;
                 inputSamplesLeft--;
-            } else
+            }
+            else
             {
                 float frame;
                 _resampler->readNextFrame( &frame );
-                bufferInStreamFormat.append( godot::Vector2(frame, frame) );
+                bufferInStreamFormat.append( godot::Vector2( frame, frame ) );
                 _current_loudness += frame * frame;
                 outputIndex++;
                 numSamplesInBuffer++;
@@ -548,11 +504,13 @@ void AudioStreamPlayerVoipExtension::transfer_opus_packet_rpc( unsigned char pac
         }
         numSamplesInBuffer = numDecodedSamples;
     }
-    _current_loudness = godot::Math::sqrt( _current_loudness / static_cast<float>( numSamplesInBuffer ) );
+    _current_loudness =
+        godot::Math::sqrt( _current_loudness / static_cast<float>( numSamplesInBuffer ) );
 
-    for(auto& audioStreamGeneratorPlayback : _audioStreamGeneratorPlaybacks)
+    for ( auto &audioStreamGeneratorPlayback : _audioStreamGeneratorPlaybacks )
     {
-        bool pushed_successfully = audioStreamGeneratorPlayback->push_buffer( bufferInStreamFormat );
+        bool pushed_successfully =
+            audioStreamGeneratorPlayback->push_buffer( bufferInStreamFormat );
         if ( !pushed_successfully )
         {
             // godot::UtilityFunctions::print_verbose(
@@ -569,6 +527,42 @@ void AudioStreamPlayerVoipExtension::transfer_opus_packet_rpc( unsigned char pac
     // _debugInfoWindow->SetString( "bytes", godot::itos(packet.size() ));
     // _debugInfoWindow->SetString( "num out of order", godot::itos( _num_out_of_order ) );
     // _debugInfoWindow->SetString( "buffer size", godot::itos(
-    //     static_cast<int>( buffer_length * static_cast<float>( mix_rate ) ) - _audioStreamGeneratorPlayback->get_frames_available()) );
+    //     static_cast<int>( buffer_length * static_cast<float>( mix_rate ) ) -
+    //     _audioStreamGeneratorPlayback->get_frames_available()) );
     // _debugInfoWindow->AddToGraph( "loudness", _current_loudness);
+    return true;
+}
+
+void AudioStreamPlayerVoipExtension::transfer_opus_packet_rpc( unsigned char packetNumber,
+                                                            const godot::PackedByteArray &packet )
+{
+    // this function was called by the rpc system because a packet was sent to us
+    // make sure that this instance is prepared to receive the packet!
+    if ( _opus_decoder == nullptr )
+    {
+        godot::UtilityFunctions::printerr(
+            "AudioStreamPlayerVoipExtension received Opus Packet, but is not ready for it! "
+            "(_audioStreamGeneratorPlayback or _opus_decoder is null)" );
+        return;
+    }
+    int missed_packets = 0;
+    while (missed_packets < 10 && ++_runningPacketNumber != packetNumber) {
+        missed_packets++;
+    }
+    if ( !_first_packet && missed_packets > 0 ) {
+        // godot::UtilityFunctions::print_verbose("AudioStreamPlayerVoipExtension missed ", missed_packets, " packets." );
+        _num_out_of_order += missed_packets;
+
+        // we have to push the amount of missing packages, so that the opus state is not messed up!
+        for ( int i = 0; i < missed_packets; ++i ) {
+            decode_and_push_to_players( nullptr, 0);
+        }
+    }
+    _first_packet = false;
+    _runningPacketNumber = packetNumber;
+    _sampleBuffer.resize( 2 * audio_package_duration_ms * mix_rate / 1000 );
+    const uint8_t *packet_data = packet.ptr();
+    int64_t packet_size = packet.size();
+
+    decode_and_push_to_players( packet_data, packet_size );
 }
