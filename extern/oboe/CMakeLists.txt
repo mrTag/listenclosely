@@ -1,5 +1,10 @@
 add_library(oboe-resampler)
 
+target_compile_features( oboe-resampler
+        PRIVATE
+        cxx_std_17
+)
+
 target_sources( oboe-resampler
         PUBLIC
         "resampler/IntegerRatio.cpp"
