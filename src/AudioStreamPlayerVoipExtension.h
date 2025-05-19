@@ -8,8 +8,6 @@
 #include "godot_cpp/classes/mutex.hpp"
 #include "godot_cpp/templates/local_vector.hpp"
 
-#include "DebugInfoWindow.h"
-
 #include <godot_cpp/classes/audio_stream_player.hpp>
 #include <godot_cpp/classes/audio_stream_player2d.hpp>
 #include <godot_cpp/classes/audio_stream_player3d.hpp>
@@ -58,7 +56,6 @@ private:
     bool _cancel_process_thread;
 
     int _num_out_of_order = 0;
-    DebugInfoWindow *_debugInfoWindow = nullptr;
     oboe::resampler::MultiChannelResampler * _resampler = nullptr;
 public:
     void process_microphone_buffer_thread();
