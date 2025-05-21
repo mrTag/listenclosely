@@ -494,9 +494,15 @@ godot::Ref<godot::AudioStreamGeneratorPlayback> create_playback( AudioStreamPlay
     // resampling is done via our own resampler, if necessary
     audio_stream_generator->set_mix_rate( godot_mix_rate );
     audio_stream_generator->set_buffer_length( buffer_length );
-    // player->call( "play_stream", audio_stream_generator, 0, 0, 0 );
-    player->set_stream( audio_stream_generator );
-    player->play();
+    if (player->has_method( "play_stream" ))
+    {
+        player->call( "play_stream", audio_stream_generator, 0, 0, 0 );
+    }
+    else
+    {
+        player->set_stream( audio_stream_generator );
+        player->play();
+    }
     godot::Ref<godot::AudioStreamGeneratorPlayback> stream_playback;
     // compatibility with godot_steam_audio extension: we need to get the "inner stream" playback
     // in that case!

@@ -139,9 +139,18 @@ set_target_properties( opus
 )
 
 
-target_link_libraries( ${PROJECT_NAME}
-    PRIVATE
-        godot-cpp
-        opus
-        oboe-resampler
-)
+if (UNIX)
+    target_link_libraries( ${PROJECT_NAME}
+        PRIVATE
+            godot-cpp
+            opus
+            oboe-resampler
+    )
+else ()
+    target_link_libraries( ${PROJECT_NAME}
+            PRIVATE
+            godot-cpp.template_release
+            opus
+            oboe-resampler
+    )
+endif ()
