@@ -2,8 +2,8 @@
 
 target_sources( ${PROJECT_NAME}
     PRIVATE
-        AudioStreamPlayerVoipExtension.h
-        AudioStreamPlayerVoipExtension.cpp
+        VoIPConnection.h
+        VoIPConnection.cpp
         RegisterExtension.cpp
 )
 

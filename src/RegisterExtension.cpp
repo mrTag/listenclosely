@@ -6,7 +6,7 @@
 #include "godot_cpp/core/defs.hpp"
 #include "godot_cpp/godot.hpp"
 
-#include "AudioStreamPlayerVoipExtension.h"
+#include "VoIPConnection.h"
 
 /// @file
 /// Register our classes with Godot.
@@ -25,8 +25,7 @@ namespace
             return;
         }
 
-
-        godot::ClassDB::register_class<AudioStreamPlayerVoipExtension>();
+        godot::ClassDB::register_class<VoIPConnection>();
     }
 
     /// @brief Called by Godot to let us do any cleanup.
