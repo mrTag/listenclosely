@@ -43,6 +43,7 @@ protected:
         int64_t peer_id;
 
         uint8_t expected_packet_number = 0;
+        uint8_t skipped_packets = 0;
         bool received_first_packet = false;
         godot::Vector<godot::PackedByteArray> queued_packets;
 

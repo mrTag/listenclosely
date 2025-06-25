@@ -238,11 +238,13 @@ void VoIPConnection::receive_decode_thread_loop()
         {
             receiving_peers_mutex->lock();
             VoIPReceivingPeer *receiving_peer = &receiving_peers.write[i];
-            if (!receiving_peer->received_first_packet)
+            // we need to initialize the expected packet number (first packet)
+            // or reset it, when we skipped too many packets
+            if (!receiving_peer->received_first_packet || receiving_peer->skipped_packets > 5)
             {
+                receiving_peer->skipped_packets = 0;
                 if (!receiving_peer->queued_packets.is_empty())
                 {
-                    // this is only to initialize our packet sequence number for the first time.
                     receiving_peer->received_first_packet = true;
                     receiving_peer->expected_packet_number = receiving_peer->queued_packets[0][0];
                 }
@@ -295,6 +297,7 @@ void VoIPConnection::receive_decode_thread_loop()
                     godot::UtilityFunctions::print_verbose(
                         "VoIPConnection didn't receive packet in time, skipping one packet.");
                     processed_packet = true;
+                    receiving_peer->skipped_packets++;
                     receiving_peers_mutex->lock();
                 }
                 if (processed_packet)
