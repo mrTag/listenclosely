@@ -252,6 +252,7 @@ void VoIPConnection::receive_decode_thread_loop()
                 {
                     // when the decoder hasn't had any packet to process, there is no
                     // sense in feeding it nullptr packets (also: leads to crash!)
+                    receiving_peers_mutex->unlock();
                     continue;
                 }
             }
