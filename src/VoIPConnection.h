@@ -46,6 +46,7 @@ protected:
         uint8_t skipped_packets = 0;
         bool received_first_packet = false;
         godot::Vector<godot::PackedByteArray> queued_packets;
+        godot::Vector<uint64_t> queued_packets_received_times;
 
         OpusDecoder *opus_decoder = nullptr;
         oboe::resampler::MultiChannelResampler * _resampler = nullptr;
@@ -79,6 +80,10 @@ protected:
     godot::Ref<godot::Thread> capture_encode_send_thread;
     godot::Ref<godot::Thread> receive_decode_thread;
     std::atomic_bool close_threads = false;
+    std::atomic<int> sending_bandwidth = 0.0f;
+    std::atomic<int> receiving_bandwidth = 0.0f;
+    std::atomic<int> send_thread_iteration_duration = 0.0f;
+    std::atomic<int> receive_thread_iteration_duration = 0.0f;
 
     godot::Ref<godot::MultiplayerPeer> multiplayer_peer;
     godot::Ref<godot::Mutex> multiplayer_peer_mutex;
@@ -97,6 +102,14 @@ public:
 
     void stop_peer_on_audio_stream_player(godot::Object* audio_stream_player);
     void stop_all_audio_stream_players_for_peer(int64_t peer_id);
+
+    int get_number_of_receiving_peers() const { return receiving_peers.size(); }
+    godot::String get_receiving_peer_debug_string(int peer_index ) const;
+    godot::String get_sending_debug_string() const;
+    int get_sending_bandwidth() const { return sending_bandwidth; }
+    int get_receiving_bandwidth() const { return receiving_bandwidth; }
+    int get_send_thread_iteration_duration() const { return send_thread_iteration_duration; }
+    int get_receive_thread_iteration_duration() const { return receive_thread_iteration_duration; }
 };
 
 
