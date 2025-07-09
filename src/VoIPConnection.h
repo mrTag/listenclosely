@@ -64,9 +64,12 @@ protected:
 
     struct VoIPSendingPeer
     {
+        int64_t peer_id;
+
         OpusEncoder *_opus_encoder = nullptr;
         oboe::resampler::MultiChannelResampler * _resampler = nullptr;
         godot::Ref<godot::AudioEffectCapture> _audio_effect_capture;
+        godot::AudioStreamPlayer* _microphone_audiostream_player = nullptr;
         // even when sending, there still can be audiostream players (walkie talkie, intercom...)
         godot::Vector<godot::Ref<godot::AudioStreamGeneratorPlayback>> audio_stream_generator_playbacks;
         godot::Vector<uint64_t> audio_stream_generator_playbacks_owners;
@@ -91,6 +94,9 @@ protected:
 public:
     void _exit_tree() override;
     void initialize( godot::Ref<godot::MultiplayerPeer> multiplayer_peer );
+
+    void lock_multiplayer_peer() { if (multiplayer_peer_mutex.is_valid()) multiplayer_peer_mutex->lock(); }
+    void unlock_multiplayer_peer() { if (multiplayer_peer_mutex.is_valid()) multiplayer_peer_mutex->unlock(); }
 
     VoIPReceivingPeer *get_receiving_peer_for_id( int64_t peer_id );
     void play_peer_on_audio_stream_player(
