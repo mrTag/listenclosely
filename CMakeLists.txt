@@ -149,7 +149,7 @@ if (UNIX)
 else ()
     target_link_libraries( ${PROJECT_NAME}
             PRIVATE
-            godot-cpp.template_release
+            godot-cpp
             opus
             oboe-resampler
     )

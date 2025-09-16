@@ -24,6 +24,18 @@ void VoIPConnection::_bind_methods()
     godot::ClassDB::bind_method( godot::D_METHOD( "initialize", "multiplayer_peer" ),
                                  &VoIPConnection::initialize );
 
+    godot::ClassDB::bind_method( godot::D_METHOD( "get_buffer_length" ),
+                                 &VoIPConnection::get_buffer_length );
+    godot::ClassDB::bind_method( godot::D_METHOD( "set_buffer_length", "buffer_length" ),
+                                 &VoIPConnection::set_buffer_length );
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::BOOL, "buffer_length"), "set_buffer_length", "get_buffer_length");
+
+    godot::ClassDB::bind_method( godot::D_METHOD( "get_audio_package_duration_ms" ),
+                                 &VoIPConnection::get_audio_package_duration_ms );
+    godot::ClassDB::bind_method( godot::D_METHOD( "set_audio_package_duration_ms", "audio_package_duration_ms" ),
+                                 &VoIPConnection::set_audio_package_duration_ms );
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::BOOL, "audio_package_duration_ms"), "set_audio_package_duration_ms", "get_audio_package_duration_ms");
+
     godot::ClassDB::bind_method( godot::D_METHOD( "lock_multiplayer_peer" ),
                                  &VoIPConnection::lock_multiplayer_peer );
 

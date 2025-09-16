@@ -35,8 +35,8 @@ protected:
     // 48000 or 24000 or 16000 or 12000 or 8000
     int mix_rate = 24000;
     int godot_mix_rate = 48000;
-    float buffer_length = 0.1f;
-    int audio_package_duration_ms = 40;
+    float buffer_length = 0.05f;
+    int audio_package_duration_ms = 20;
 
     struct VoIPReceivingPeer
     {
@@ -94,6 +94,12 @@ protected:
 public:
     void _exit_tree() override;
     void initialize( godot::Ref<godot::MultiplayerPeer> multiplayer_peer );
+
+    float get_buffer_length() const { return buffer_length; }
+    void set_buffer_length( float p_buffer_length ) { buffer_length = p_buffer_length; }
+
+    int get_audio_package_duration_ms() const { return audio_package_duration_ms; }
+    void set_audio_package_duration_ms(int duration) { audio_package_duration_ms = duration; }
 
     void lock_multiplayer_peer() { if (multiplayer_peer_mutex.is_valid()) multiplayer_peer_mutex->lock(); }
     void unlock_multiplayer_peer() { if (multiplayer_peer_mutex.is_valid()) multiplayer_peer_mutex->unlock(); }
