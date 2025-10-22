@@ -133,6 +133,16 @@ add_subdirectory( extern/godot-cpp )
 add_subdirectory( extern/opus )
 add_subdirectory( extern/oboe )
 
+set( PROFILING_ENABLED OFF CACHE BOOL "" )
+if (PROFILING_ENABLED)
+    add_compile_definitions(TRACY_ON_DEMAND)
+    add_compile_definitions(TRACY_IMPORTS)
+    add_compile_definitions(TRACY_ENABLE)
+    set ( TRACY_STATIC OFF CACHE BOOL "" FORCE )
+    add_subdirectory( extern/tracy )
+    add_compile_definitions(PROFILING_ENABLED)
+endif()
+
 set_target_properties( opus
     PROPERTIES
         POSITION_INDEPENDENT_CODE ON
@@ -152,5 +162,6 @@ else ()
             godot-cpp
             opus
             oboe-resampler
+            $<$<BOOL:${PROFILING_ENABLED}>:TracyClient>
     )
 endif ()
