@@ -1,7 +1,6 @@
 #ifndef VOIPCONNECTION_H
 #define VOIPCONNECTION_H
 
-#include "godot_cpp/classes/audio_effect_capture.hpp"
 #include "godot_cpp/classes/audio_stream_generator_playback.hpp"
 #include "godot_cpp/classes/node.hpp"
 #include "godot_cpp/classes/thread.hpp"
@@ -68,8 +67,6 @@ protected:
 
         OpusEncoder *_opus_encoder = nullptr;
         oboe::resampler::MultiChannelResampler * _resampler = nullptr;
-        godot::Ref<godot::AudioEffectCapture> _audio_effect_capture;
-        godot::AudioStreamPlayer* _microphone_audiostream_player = nullptr;
         // even when sending, there still can be audiostream players (walkie talkie, intercom...)
         godot::Vector<godot::Ref<godot::AudioStreamGeneratorPlayback>> audio_stream_generator_playbacks;
         godot::Vector<uint64_t> audio_stream_generator_playbacks_owners;
@@ -87,6 +84,9 @@ protected:
     std::atomic<int> receiving_bandwidth = 0.0f;
     std::atomic<int> send_thread_iteration_duration = 0.0f;
     std::atomic<int> receive_thread_iteration_duration = 0.0f;
+    std::atomic<float> microphone_loudness_db = 0.0f;
+    std::atomic<float> microphone_peak_db = 0.0f;
+    std::atomic<float> microphone_gain = 1.0f;
 
     godot::Ref<godot::MultiplayerPeer> multiplayer_peer;
     godot::Ref<godot::Mutex> multiplayer_peer_mutex;
@@ -100,6 +100,13 @@ public:
 
     int get_audio_package_duration_ms() const { return audio_package_duration_ms; }
     void set_audio_package_duration_ms(int duration) { audio_package_duration_ms = duration; }
+
+    float get_microphone_loudness_db() const { return microphone_loudness_db.load(); }
+    void set_microphone_loudness_db(float value) { microphone_loudness_db.store(value); }
+    float get_microphone_peak_db() const { return microphone_peak_db.load(); }
+    void set_microphone_peak_db(float value) { microphone_peak_db.store(value); }
+    float get_microphone_gain() const { return microphone_gain.load(); }
+    void set_microphone_gain(float value) { microphone_gain.store(value); }
 
     void lock_multiplayer_peer() { if (multiplayer_peer_mutex.is_valid()) multiplayer_peer_mutex->lock(); }
     void unlock_multiplayer_peer() { if (multiplayer_peer_mutex.is_valid()) multiplayer_peer_mutex->unlock(); }

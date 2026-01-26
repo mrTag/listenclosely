@@ -4,7 +4,6 @@
 #include "resampler/MultiChannelResampler.h"
 
 #include <godot_cpp/classes/audio_stream_generator.hpp>
-#include <godot_cpp/classes/audio_stream_microphone.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include "godot_cpp/classes/audio_server.hpp"
@@ -18,6 +17,8 @@
 #include "godot_cpp/variant/callable.hpp"
 
 #include "profiling.h"
+
+#include <cmath>
 
 const int VOIP_CHANNEL = 11;
 
@@ -37,6 +38,27 @@ void VoIPConnection::_bind_methods()
     godot::ClassDB::bind_method( godot::D_METHOD( "set_audio_package_duration_ms", "audio_package_duration_ms" ),
                                  &VoIPConnection::set_audio_package_duration_ms );
     ADD_PROPERTY(godot::PropertyInfo(godot::Variant::BOOL, "audio_package_duration_ms"), "set_audio_package_duration_ms", "get_audio_package_duration_ms");
+
+    godot::ClassDB::bind_method( godot::D_METHOD( "get_microphone_loudness_db" ),
+                                 &VoIPConnection::get_microphone_loudness_db );
+    godot::ClassDB::bind_method( godot::D_METHOD( "set_microphone_loudness_db", "microphone_loudness_db" ),
+                                 &VoIPConnection::set_microphone_loudness_db );
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::FLOAT, "microphone_loudness_db"),
+        "set_microphone_loudness_db", "get_microphone_loudness_db");
+
+    godot::ClassDB::bind_method( godot::D_METHOD( "get_microphone_peak_db" ),
+                                 &VoIPConnection::get_microphone_peak_db );
+    godot::ClassDB::bind_method( godot::D_METHOD( "set_microphone_peak_db", "microphone_peak_db" ),
+                                 &VoIPConnection::set_microphone_peak_db );
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::FLOAT, "microphone_peak_db"),
+        "set_microphone_peak_db", "get_microphone_peak_db");
+
+    godot::ClassDB::bind_method( godot::D_METHOD( "get_microphone_gain" ),
+                                 &VoIPConnection::get_microphone_gain );
+    godot::ClassDB::bind_method( godot::D_METHOD( "set_microphone_gain", "microphone_gain" ),
+                                 &VoIPConnection::set_microphone_gain );
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::FLOAT, "microphone_gain"),
+        "set_microphone_gain", "get_microphone_gain");
 
     godot::ClassDB::bind_method( godot::D_METHOD( "lock_multiplayer_peer" ),
                                  &VoIPConnection::lock_multiplayer_peer );
@@ -121,21 +143,10 @@ godot::String VoIPConnection::get_sending_debug_string() const
     godot::String ret;
     ret += "Num local audiostream players: ";
     ret += godot::String::num( sending_peer.audio_stream_generator_playbacks.size(), 0);
-    ret += "\nCapture Effect available frames: ";
-    if (sending_peer._audio_effect_capture.is_valid())
-        ret += godot::String::num( sending_peer._audio_effect_capture->get_frames_available(), 0);
-    else
-        ret += "No Capture Effect!";
-
-    ret += "\nCapture Effect buffer size: ";
-    if (sending_peer._audio_effect_capture.is_valid())
-        ret += godot::String::num( sending_peer._audio_effect_capture->get_buffer_length(), 0);
-    else
-        ret += "No Capture Effect!";
-
-    ret += "\nCapture Effect num discarded frames: ";
-    if (sending_peer._audio_effect_capture.is_valid())
-        ret += godot::String::num(sending_peer._audio_effect_capture->get_discarded_frames(), 0);
+    ret += "\nInput frames available: ";
+    ret += godot::String::num(godot::AudioServer::get_singleton()->get_input_frames_available());
+    ret += "\nInput buffer length frames: ";
+    ret += godot::String::num(godot::AudioServer::get_singleton()->get_input_buffer_length_frames());
     return ret;
 }
 
@@ -155,19 +166,40 @@ void VoIPConnection::capture_encode_send_thread_loop()
     {
         auto start_time = godot::Time::get_singleton()->get_ticks_msec();
         bool something_sent = false;
-        if (sending_peer._audio_effect_capture.is_valid())
-        {
-            PROFILING_PLOT_NUMBER( "audio_capture_frames", (int64_t)sending_peer._audio_effect_capture->get_frames_available() );
-        }
+        PROFILING_PLOT_NUMBER( "input_frames_available", (int64_t)godot::AudioServer::get_singleton()->get_input_frames_available() );
+
         // capture from the microphone
-        while (!close_threads.load( ) && sending_peer._audio_effect_capture.is_valid() &&
-             sending_peer._audio_effect_capture->can_get_buffer( audio_package_duration_ms * godot_mix_rate /
-                                                  1000 ) )
+        while (!close_threads.load( ) && godot::AudioServer::get_singleton()->get_input_frames_available() >= audio_package_duration_ms * godot_mix_rate / 1000 )
         {
             PROFILE_FUNCTION_NAMED( "process_one_package" );
             something_sent = true;
-            godot::PackedVector2Array stereoSampleBuffer = sending_peer._audio_effect_capture->get_buffer(
+            godot::PackedVector2Array stereoSampleBuffer = godot::AudioServer::get_singleton()->get_input_frames(
                 audio_package_duration_ms * godot_mix_rate / 1000 );
+
+            {
+                float gain = microphone_gain.load();
+                float peak = 0.0f;
+                double sum_sq = 0.0;
+                for ( int i = 0; i < stereoSampleBuffer.size(); ++i )
+                {
+                    float sample = stereoSampleBuffer[i].x * gain;
+                    stereoSampleBuffer.set(i, { sample, sample });
+                    float abs_sample = std::abs( sample );
+                    if ( abs_sample > peak )
+                    {
+                        peak = abs_sample;
+                    }
+                    sum_sq += static_cast<double>( sample ) * static_cast<double>( sample );
+                }
+                const float min_db = -120.0f;
+                float rms = 0.0f;
+                if ( stereoSampleBuffer.size() > 0 )
+                {
+                    rms = std::sqrt( static_cast<float>( sum_sq / stereoSampleBuffer.size() ) );
+                }
+                microphone_peak_db.store( peak > 0.0f ? 20.0f * std::log10( peak ) : min_db );
+                microphone_loudness_db.store( rms > 0.0f ? 20.0f * std::log10( rms ) : min_db );
+            }
 
             {
                 // having audio stream players for the sending side is rare, but can happen
@@ -572,12 +604,10 @@ void VoIPConnection::_exit_tree()
         opus_encoder_destroy( sending_peer._opus_encoder );
         sending_peer._opus_encoder = nullptr;
     }
-    sending_peer._audio_effect_capture = godot::Variant();
     delete sending_peer._resampler;
     sending_peer._resampler = nullptr;
     sending_peer.audio_stream_generator_playbacks.clear();
     sending_peer.audio_stream_generator_playbacks_owners.clear();
-    sending_peer._microphone_audiostream_player = nullptr;
 
     for (const auto & receiving_peer : receiving_peers)
     {
@@ -602,49 +632,7 @@ void VoIPConnection::initialize( godot::Ref<godot::MultiplayerPeer> multiplayer_
     auto audioserver = godot::AudioServer::get_singleton();
     godot_mix_rate = static_cast<int>( audioserver->get_mix_rate() );
 
-    // make sure that we have a bus named "MicCapture".
-    int capture_bus_index = audioserver->get_bus_index( "MicCapture" );
-    if ( capture_bus_index == -1 )
-    {
-        audioserver->add_bus();
-        capture_bus_index = audioserver->get_bus_count() - 1;
-        audioserver->set_bus_name( capture_bus_index, "MicCapture" );
-        audioserver->set_bus_mute( capture_bus_index, true );
-        godot::Ref<godot::AudioEffectCapture> audioEffectCapture;
-        audioEffectCapture.instantiate();
-        audioEffectCapture->set_name( "Capture" );
-        audioEffectCapture->set_buffer_length( buffer_length );
-        audioserver->add_bus_effect( capture_bus_index, audioEffectCapture );
-    }
-    else
-    {
-        if ( audioserver->get_bus_effect_count( capture_bus_index ) == 0 ||
-             !audioserver
-                  ->get_bus_effect( capture_bus_index,
-                                    audioserver->get_bus_effect_count( capture_bus_index ) - 1 )
-                  ->is_class( "AudioEffectCapture" ) )
-        {
-            // our MicCapture bus should have an "AudioEffectCapture" Effect as the last effect
-            godot::UtilityFunctions::printerr(
-                "AudioStreamPlayerVoipExtension detected invalid MicCapture audio bus "
-                "configuration. Attempting to fix it..." );
-            for ( int i = audioserver->get_bus_effect_count( capture_bus_index ) - 1; i >= 0; --i )
-            {
-                // we'll just remove all AudioEffectCapture effects...
-                if ( audioserver->get_bus_effect( capture_bus_index, i )
-                         ->is_class( "AudioEffectCapture" ) )
-                {
-                    audioserver->remove_bus_effect( capture_bus_index, i );
-                }
-            }
-            // and create one to add as the last one.
-            godot::Ref<godot::AudioEffectCapture> audioEffectCapture;
-            audioEffectCapture.instantiate();
-            audioEffectCapture->set_name( "Capture" );
-            audioEffectCapture->set_buffer_length( buffer_length );
-            audioserver->add_bus_effect( capture_bus_index, audioEffectCapture );
-        }
-    }
+    godot::AudioServer::get_singleton()->set_input_device_active( true );
 
     int opus_error = 0;
     sending_peer._opus_encoder =
@@ -655,17 +643,6 @@ void VoIPConnection::initialize( godot::Ref<godot::MultiplayerPeer> multiplayer_
             "AudioStreamPlayerVoipExtension could not create Opus Encoder. Error: ", opus_error );
         return;
     }
-    // To record the microphone, we'll need a simple AudioStreamPlayer. So we just create it:
-    sending_peer._microphone_audiostream_player = memnew( godot::AudioStreamPlayer() );
-    godot::AudioStreamMicrophone *micCaptureStream = memnew( godot::AudioStreamMicrophone() );
-    sending_peer._microphone_audiostream_player->set_stream( micCaptureStream );
-    sending_peer._microphone_audiostream_player->set_bus( "MicCapture" );
-    add_child( sending_peer._microphone_audiostream_player );
-    sending_peer._microphone_audiostream_player->play();
-
-    sending_peer._audio_effect_capture = audioserver->get_bus_effect(
-        capture_bus_index, audioserver->get_bus_effect_count( capture_bus_index ) - 1 );
-    sending_peer._audio_effect_capture->set_buffer_length( buffer_length );
 
     godot_mix_rate = (int)audioserver->get_mix_rate();
     if ( godot_mix_rate != mix_rate )
@@ -801,7 +778,6 @@ void VoIPConnection::play_peer_on_audio_stream_player(
             // this is a local stream player, we can get away with less buffer
             (float)audio_package_duration_ms / 1000.0f * 1.25f );
         // and we don't want the buffer to be pre-filled with silence in this case
-        playback->clear_buffer();
         sending_audio_stream_vectors_mutex->lock();
         sending_peer.audio_stream_generator_playbacks.push_back( playback );
         sending_peer.audio_stream_generator_playbacks_owners.push_back(
@@ -836,7 +812,6 @@ void VoIPConnection::play_peer_on_audio_stream_player_2d(
             // this is a local stream player, we can get away with less buffer
             (float)audio_package_duration_ms / 1000.0f * 1.25f );
         // and we don't want the buffer to be pre-filled with silence in this case
-        playback->clear_buffer();
         sending_audio_stream_vectors_mutex->lock();
         sending_peer.audio_stream_generator_playbacks.push_back( playback );
         sending_peer.audio_stream_generator_playbacks_owners.push_back(
@@ -871,7 +846,6 @@ void VoIPConnection::play_peer_on_audio_stream_player_3d(
             // this is a local stream player, we can get away with less buffer
             (float)audio_package_duration_ms / 1000.0f * 1.25f );
         // and we don't want the buffer to be pre-filled with silence in this case
-        playback->clear_buffer();
         sending_audio_stream_vectors_mutex->lock();
         sending_peer.audio_stream_generator_playbacks.push_back( playback );
         sending_peer.audio_stream_generator_playbacks_owners.push_back(

@@ -42,6 +42,18 @@ target_compile_features( ${PROJECT_NAME}
         cxx_std_17
 )
 
+# Force static runtime library on Windows to match godot-cpp
+if(WIN32 AND MSVC)
+    # Set the runtime library to static for all configurations
+    set_property(TARGET ${PROJECT_NAME} PROPERTY
+            MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    )
+
+    # Also apply to external libraries we're building
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+endif()
+
 # LIB_ARCH is the architecture being built. It is set to the build system's architecture.
 # For macOS, we build a universal library (both arm64 and x86_64).
 set( LIB_ARCH ${CMAKE_SYSTEM_PROCESSOR} )
