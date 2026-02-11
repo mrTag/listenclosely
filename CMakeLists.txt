@@ -14,8 +14,8 @@ endif()
 # Add paths to modules
 list( APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/" )
 
-# Turn on link time optimization for everything
-set( CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON )
+# Turn off link time optimization for everything (has massive problems building)
+set( CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF )
 
 # Output compile commands to compile_commands.json (for debugging CMake issues)
 set( CMAKE_EXPORT_COMPILE_COMMANDS ON )
@@ -43,7 +43,7 @@ target_compile_features( ${PROJECT_NAME}
 )
 
 # Force static runtime library on Windows to match godot-cpp
-if(WIN32 AND MSVC)
+if(MSVC)
     # Set the runtime library to static for all configurations
     set_property(TARGET ${PROJECT_NAME} PROPERTY
             MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
@@ -52,6 +52,8 @@ if(WIN32 AND MSVC)
     # Also apply to external libraries we're building
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Zi")
+    set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /DEBUG")
 endif()
 
 # LIB_ARCH is the architecture being built. It is set to the build system's architecture.
@@ -140,6 +142,11 @@ if ( NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/extern/godot-cpp/Makefile" )
 endif()
 
 set( GODOT_CPP_SYSTEM_HEADERS ON CACHE BOOL "" FORCE )
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(GODOTCPP_TARGET template_debug CACHE STRING "" FORCE)
+else()
+    set(GODOTCPP_TARGET template_release CACHE STRING "" FORCE)
+endif()
 
 add_subdirectory( extern/godot-cpp )
 add_subdirectory( extern/opus )
