@@ -118,6 +118,7 @@ public:
         int64_t peer_id, godot::AudioStreamPlayer2D* audio_stream_player );
     void play_peer_on_audio_stream_player_3d( int64_t peer_id,
                                               godot::AudioStreamPlayer3D *audio_stream_player );
+    godot::Ref<godot::AudioStreamPlayback> play_peer_on( int64_t peer_id, godot::Node* node );
 
     void stop_peer_on_audio_stream_player(godot::Object* audio_stream_player);
     void stop_all_audio_stream_players_for_peer(int64_t peer_id);
