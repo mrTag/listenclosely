@@ -6,6 +6,7 @@
 #include "godot_cpp/core/defs.hpp"
 #include "godot_cpp/godot.hpp"
 
+#include "AudioStreamVoip.h"
 #include "VoIPConnection.h"
 
 /// @file
@@ -25,6 +26,8 @@ namespace
             return;
         }
 
+        godot::ClassDB::register_class<AudioStreamVoipPlayback>();
+        godot::ClassDB::register_class<AudioStreamVoip>();
         godot::ClassDB::register_class<VoIPConnection>();
     }
 

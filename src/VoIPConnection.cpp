@@ -19,6 +19,7 @@
 #include "profiling.h"
 
 #include <cmath>
+#include "RingBuffer.h"
 
 const int VOIP_CHANNEL = 11;
 
@@ -31,13 +32,13 @@ void VoIPConnection::_bind_methods()
                                  &VoIPConnection::get_buffer_length );
     godot::ClassDB::bind_method( godot::D_METHOD( "set_buffer_length", "buffer_length" ),
                                  &VoIPConnection::set_buffer_length );
-    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::BOOL, "buffer_length"), "set_buffer_length", "get_buffer_length");
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::FLOAT, "buffer_length"), "set_buffer_length", "get_buffer_length");
 
     godot::ClassDB::bind_method( godot::D_METHOD( "get_audio_package_duration_ms" ),
                                  &VoIPConnection::get_audio_package_duration_ms );
     godot::ClassDB::bind_method( godot::D_METHOD( "set_audio_package_duration_ms", "audio_package_duration_ms" ),
                                  &VoIPConnection::set_audio_package_duration_ms );
-    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::BOOL, "audio_package_duration_ms"), "set_audio_package_duration_ms", "get_audio_package_duration_ms");
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::INT, "audio_package_duration_ms"), "set_audio_package_duration_ms", "get_audio_package_duration_ms");
 
     godot::ClassDB::bind_method( godot::D_METHOD( "get_microphone_loudness_db" ),
                                  &VoIPConnection::get_microphone_loudness_db );
@@ -108,8 +109,10 @@ void VoIPConnection::_bind_methods()
                                  &VoIPConnection::peer_disconnected );
 }
 
-godot::String VoIPConnection::get_receiving_peer_debug_string( int peer_index ) const
+godot::String VoIPConnection::get_receiving_peer_debug_string( int peer_index )
 {
+    PROFILE_FUNCTION()
+    std::shared_lock receiving_peers_shared_lock(receiving_peers_mutex);
     if (receiving_peers.size() <= peer_index)
     {
         return "No receiving peer data";
@@ -135,22 +138,38 @@ godot::String VoIPConnection::get_receiving_peer_debug_string( int peer_index ) 
         }
         else
         {
-            ret += godot::vformat( ": available frames: %d", playback->get_frames_available());
+            ret += godot::vformat( ": available frames: %d", playback->get_available_buffer_size());
         }
     }
     return ret;
 }
 
-godot::String VoIPConnection::get_sending_debug_string() const
+godot::String VoIPConnection::get_sending_debug_string()
 {
+    PROFILE_FUNCTION()
+    std::shared_lock sending_peer_shared_lock(sending_audio_stream_vectors_mutex);
     // this is a debug function, no need to make it highly performant...
     godot::String ret;
-    ret += "Num local audiostream players: ";
-    ret += godot::String::num( sending_peer.audio_stream_generator_playbacks.size(), 0);
     ret += "\nInput frames available: ";
     ret += godot::String::num(godot::AudioServer::get_singleton()->get_input_frames_available());
     ret += "\nInput buffer length frames: ";
     ret += godot::String::num(godot::AudioServer::get_singleton()->get_input_buffer_length_frames());
+    ret += "Num local audiostream playbacks: ";
+    ret += godot::String::num( sending_peer.audio_stream_generator_playbacks.size(), 0);
+    int i = 0;
+    for (const auto& playback : sending_peer.audio_stream_generator_playbacks)
+    {
+        ret += "\n  Playback ";
+        ret += godot::String::num( i++, 0 );
+        if (!playback.is_valid())
+        {
+            ret += ": Invalid Audio Stream Playback!";
+        }
+        else
+        {
+            ret += godot::vformat( ": available frames: %d", playback->get_available_buffer_size());
+        }
+    }
     return ret;
 }
 
@@ -163,11 +182,18 @@ void VoIPConnection::capture_encode_send_thread_loop()
     godot::PackedFloat32Array float32_buffer;
     godot::PackedByteArray byte_buffer;
     uint8_t packet_number = 0;
-    int duration;
+    int duration = 0;
     auto duration_measurement_start_time = godot::Time::get_singleton()->get_ticks_msec();
 
+    auto wait_time = std::chrono::milliseconds(
+        5
+    );
+    using clock = std::chrono::steady_clock;
+    auto spin_threshold = std::chrono::milliseconds(1);
     while (!close_threads.load( ))
     {
+        auto start = clock::now();
+
         auto start_time = godot::Time::get_singleton()->get_ticks_msec();
         bool something_sent = false;
         PROFILING_PLOT_NUMBER( "input_frames_available", (int64_t)godot::AudioServer::get_singleton()->get_input_frames_available() );
@@ -209,7 +235,7 @@ void VoIPConnection::capture_encode_send_thread_loop()
                 // having audio stream players for the sending side is rare, but can happen
                 // for things like walkie-talkies or intercoms, where the player could hear
                 // themselves...
-                sending_audio_stream_vectors_mutex->lock();
+                std::shared_lock sending_lock(sending_audio_stream_vectors_mutex);
                 PROFILE_FUNCTION_NAMED( "fill_local_audio_buffer" );
                 bool debug_plot = true;
                 for ( auto &audioStreamGeneratorPlayback :
@@ -217,7 +243,7 @@ void VoIPConnection::capture_encode_send_thread_loop()
                 {
                     if (debug_plot)
                     {
-                        PROFILING_PLOT_NUMBER( "audio_stream_generator_frames", (int64_t)audioStreamGeneratorPlayback->get_frames_available())
+                        PROFILING_PLOT_NUMBER( "audio_stream_generator_frames", (int64_t)audioStreamGeneratorPlayback->get_free_buffer_size())
                         // can only plot at most one here, since they all land in the same plot!
                         debug_plot = false;
                     }
@@ -226,13 +252,15 @@ void VoIPConnection::capture_encode_send_thread_loop()
                     if ( !pushed_successfully )
                     {
                         godot::UtilityFunctions::print_verbose(
-                            "VoIPConnection could not push received audio buffer into the "
+                            "VoIPConnection could not push local audio buffer into the "
                             "AudioStreamGeneratorPlayback. Free Space: ",
-                            audioStreamGeneratorPlayback->get_frames_available(),
+                            audioStreamGeneratorPlayback->get_free_buffer_size(),
                             " needed space: ", stereoSampleBuffer.size() );
+                        // before we lose the data, let's push at least partially...
+                        audioStreamGeneratorPlayback->push_buffer( stereoSampleBuffer.slice(
+                            0, audioStreamGeneratorPlayback->get_free_buffer_size() ) );
                     }
                 }
-                sending_audio_stream_vectors_mutex->unlock();
             }
 
             // opus needs the samples in a float32 buffer, we just reserve more than enough here
@@ -285,13 +313,12 @@ void VoIPConnection::capture_encode_send_thread_loop()
             }
             if ( sizeOfEncodedPackage > 0 )
             {
+                std::lock_guard multiplayer_peer_lock(multiplayer_peer_mutex);
                 byte_buffer.resize( sizeOfEncodedPackage + 1 );
-                multiplayer_peer_mutex->lock();
                 multiplayer_peer->set_target_peer( 0 );
                 multiplayer_peer->set_transfer_channel( VOIP_CHANNEL );
                 multiplayer_peer->set_transfer_mode( godot::MultiplayerPeer::TRANSFER_MODE_UNRELIABLE );
                 multiplayer_peer->put_packet( byte_buffer );
-                multiplayer_peer_mutex->unlock();
                 sent_bytes.push_back( sizeOfEncodedPackage + 1 );
                 sent_bytes_times.push_back( godot::Time::get_singleton()->get_ticks_msec() );
             }
@@ -327,9 +354,17 @@ void VoIPConnection::capture_encode_send_thread_loop()
             duration_measurement_start_time = godot::Time::get_singleton()->get_ticks_msec();
         }
 
-        if (!something_sent)
+        // hybrid spin sleep (try to reduce CPU usage while still being responsive)
+        auto target = start + wait_time;
+        while (clock::now() < target)
         {
-            godot::OS::get_singleton()->delay_msec( 1 );
+            if (clock::now() + spin_threshold < target) {
+                std::this_thread::sleep_for(std::chrono::microseconds(100));
+            } else {
+                while (clock::now() < target) {
+                    std::this_thread::yield();
+                }
+            }
         }
     }
 }
@@ -399,28 +434,34 @@ void VoIPConnection::receive_decode_thread_loop()
 
     int duration = 0;
     auto duration_measurement_start_time = godot::Time::get_singleton()->get_ticks_msec();
+    auto wait_time = std::chrono::milliseconds(
+        5
+    );
+    using clock = std::chrono::steady_clock;
+    auto spin_threshold = std::chrono::milliseconds(1);
     while (!close_threads.load( ))
     {
+        auto start = clock::now();
         auto start_time = godot::Time::get_singleton()->get_ticks_msec();
 
         bool something_received_or_processed = false;
         // poll the multiplayer_peer
-        multiplayer_peer_mutex->lock();
+        multiplayer_peer_mutex.lock();
         multiplayer_peer->poll();
         int32_t available_packet_count = multiplayer_peer->get_available_packet_count();
-        multiplayer_peer_mutex->unlock();
+        multiplayer_peer_mutex.unlock();
         // while there are packets, get them
         while ( available_packet_count > 0 )
         {
             PROFILE_FUNCTION_NAMED( "queue_package" );
-            multiplayer_peer_mutex->lock();
+            multiplayer_peer_mutex.lock();
             int64_t packet_peer = multiplayer_peer->get_packet_peer();
             godot::PackedByteArray packet = multiplayer_peer->get_packet();
             available_packet_count = multiplayer_peer->get_available_packet_count();;
-            multiplayer_peer_mutex->unlock();
+            multiplayer_peer_mutex.unlock();
             // check if we have a receiving_peer for them
-            receiving_peers_mutex->lock();
-            VoIPReceivingPeer *receiving_peer = get_receiving_peer_for_id( packet_peer );
+            receiving_peers_mutex.lock_shared();
+            VoIPReceivingPeer *receiving_peer = get_receiving_peer_or_null( packet_peer );
             if ( receiving_peer != nullptr )
             {
                 // since the packets can arrive in any order, we'll store them in a queue
@@ -431,32 +472,41 @@ void VoIPConnection::receive_decode_thread_loop()
                 recv_bytes.push_back( packet.size() );
                 recv_bytes_times.push_back( godot::Time::get_singleton()->get_ticks_msec() );
             }
-            receiving_peers_mutex->unlock();
+            receiving_peers_mutex.unlock_shared();
             something_received_or_processed = true;
         }
 
         // the processing of the packets happens independently of receiving
         const int buffer_urgency_threshold_ms = buffer_length * 1000.0f;
-        for ( int i = 0; i < receiving_peers.size(); ++i )
+        receiving_peers_mutex.lock_shared();
+        int check_index = -1; 
+        int64_t current_peer_id = get_next_peer_id( -1, &check_index );
+        while ( current_peer_id != -1 )
         {
+            VoIPReceivingPeer *receiving_peer = get_receiving_peer_or_null( current_peer_id );
+            if (receiving_peer == nullptr)
+            {
+                current_peer_id = get_next_peer_id( current_peer_id, &check_index );
+                continue;
+            }
             PROFILE_FUNCTION_NAMED( "processing_peer" );
             uint64_t now = godot::Time::get_singleton()->get_ticks_msec();
-            receiving_peers_mutex->lock();
-            VoIPReceivingPeer *receiving_peer = &receiving_peers.write[i];
-            // we need to initialize the expected packet number (first packet)
-            if (!receiving_peer->received_first_packet)
             {
-                if (!receiving_peer->queued_packets.is_empty())
+                // we need to initialize the expected packet number (first packet)
+                if (!receiving_peer->received_first_packet)
                 {
-                    receiving_peer->received_first_packet = true;
-                    receiving_peer->expected_packet_number = receiving_peer->queued_packets[0][0];
-                }
-                else
-                {
-                    // when the decoder hasn't had any packet to process, there is no
-                    // sense in feeding it nullptr packets (also: leads to crash!)
-                    receiving_peers_mutex->unlock();
-                    continue;
+                    if (!receiving_peer->queued_packets.is_empty())
+                    {
+                        receiving_peer->received_first_packet = true;
+                        receiving_peer->expected_packet_number = receiving_peer->queued_packets[0][0];
+                    }
+                    else
+                    {
+                        // when the decoder hasn't had any packet to process, there is no
+                        // sense in feeding it nullptr packets (also: leads to crash!)
+                        current_peer_id = get_next_peer_id( current_peer_id, &check_index );
+                        continue;
+                    }
                 }
             }
             bool processed_packet = true;
@@ -484,13 +534,10 @@ void VoIPConnection::receive_decode_thread_loop()
                         receiving_peer->stream_has_packets_until += audio_package_duration_ms;
                         auto opus_decoder = receiving_peer->opus_decoder;
                         auto resampler = receiving_peer->_resampler;
-                        // unlock the mutex for the decoding time...
-                        receiving_peers_mutex->unlock();
                         decode(packet.ptr() + 1, packet.size() - 1,
                             opus_decoder, audio_package_duration_ms * mix_rate / 1000,
                             resampler, float32_buffer, stream_buffer);
                         processed_packet = true;
-                        receiving_peers_mutex->lock();
                         break;
                     }
                 }
@@ -504,19 +551,16 @@ void VoIPConnection::receive_decode_thread_loop()
                     receiving_peer->stream_has_packets_until += audio_package_duration_ms;
                     auto opus_decoder = receiving_peer->opus_decoder;
                     auto resampler = receiving_peer->_resampler;
-                    // unlock the mutex for the decoding time...
-                    receiving_peers_mutex->unlock();
                     decode(nullptr, 0,
                         opus_decoder, audio_package_duration_ms * mix_rate / 1000,
                         resampler, float32_buffer, stream_buffer);
                     godot::UtilityFunctions::print_verbose(
                         "VoIPConnection didn't receive packet in time, skipping one packet.");
                     processed_packet = true;
-                    receiving_peers_mutex->lock();
                 }
                 if (processed_packet)
                 {
-                    receiving_audio_stream_vectors_mutex->lock();
+                    receiving_audio_stream_vectors_mutex.lock_shared();
                     PROFILE_FUNCTION_NAMED( "pushing_to_audio_playbacks" );
                     for ( auto &audioStreamGeneratorPlayback : receiving_peer->audio_stream_generator_playbacks )
                     {
@@ -527,11 +571,14 @@ void VoIPConnection::receive_decode_thread_loop()
                             godot::UtilityFunctions::print_verbose(
                                 "VoIPConnection could not push received audio buffer into the "
                                 "AudioStreamGeneratorPlayback. Free Space: ",
-                                audioStreamGeneratorPlayback->get_frames_available(),
+                                audioStreamGeneratorPlayback->get_free_buffer_size(),
                                 " needed space: ", stream_buffer.size() );
+                            // before we lose the data, let's push at least partially...
+                            audioStreamGeneratorPlayback->push_buffer( stream_buffer.slice(
+                                0, audioStreamGeneratorPlayback->get_free_buffer_size() ) );
                         }
                     }
-                    receiving_audio_stream_vectors_mutex->unlock();
+                    receiving_audio_stream_vectors_mutex.unlock_shared();
                     something_received_or_processed = true;
                 }
             }
@@ -553,8 +600,12 @@ void VoIPConnection::receive_decode_thread_loop()
                                 "skip it earlier, because it arrived too late.");
                 }
             }
-            receiving_peers_mutex->unlock();
+            // yield between peers
+            receiving_peers_mutex.unlock_shared();
+            receiving_peers_mutex.lock_shared();
+            current_peer_id = get_next_peer_id( current_peer_id, &check_index );
         }
+        receiving_peers_mutex.unlock_shared();
 
         int num_recv_bytes = 0;
         auto now = godot::Time::get_singleton()->get_ticks_msec();
@@ -580,9 +631,17 @@ void VoIPConnection::receive_decode_thread_loop()
             duration_measurement_start_time = godot::Time::get_singleton()->get_ticks_msec();
         }
 
-        if (!something_received_or_processed)
+        // hybrid spin sleep (try to reduce CPU usage while still being responsive)
+        auto target = start + wait_time;
+        while (clock::now() < target)
         {
-            godot::OS::get_singleton()->delay_msec( 1 );
+            if (clock::now() + spin_threshold < target) {
+                std::this_thread::sleep_for(std::chrono::microseconds(100));
+            } else {
+                while (clock::now() < target) {
+                    std::this_thread::yield();
+                }
+            }
         }
     }
 }
@@ -626,11 +685,8 @@ void VoIPConnection::_exit_tree()
 
 void VoIPConnection::initialize( godot::Ref<godot::MultiplayerPeer> multiplayer_peer_param )
 {
-    receiving_peers_mutex.instantiate();
-    receiving_audio_stream_vectors_mutex.instantiate();
-    sending_audio_stream_vectors_mutex.instantiate();
-    multiplayer_peer_mutex.instantiate();
 
+    PROFILE_FUNCTION()
     multiplayer_peer = multiplayer_peer_param;
     sending_peer.peer_id = multiplayer_peer->get_unique_id();
     auto audioserver = godot::AudioServer::get_singleton();
@@ -664,14 +720,15 @@ void VoIPConnection::initialize( godot::Ref<godot::MultiplayerPeer> multiplayer_
     multiplayer_peer->connect( "peer_disconnected", godot::Callable( this, "peer_disconnected" ) );
 
     godot::UtilityFunctions::print_verbose(
-        "VoIPConnection MicCapture and opus encoder initialized successfully." );
+        "VoIPConnection MicCapture and opus encoder initialized successfully. Godot Mix Rate ", godot_mix_rate, " Opus Mix Rate ", mix_rate, " buffer length ", buffer_length );
 }
 
 void VoIPConnection::peer_disconnected( int64_t peer_id )
 {
+    PROFILE_FUNCTION()
     godot::UtilityFunctions::print_verbose( "VoIPConnection peer disconnected: ", peer_id, " removing all VoIP remnants for this peer." );
     stop_all_audio_stream_players_for_peer( peer_id );
-    receiving_peers_mutex->lock();
+    receiving_peers_mutex.lock();
     for ( int i = 0; i < receiving_peers.size(); ++i )
     {
         if (receiving_peers[i].peer_id == peer_id)
@@ -682,21 +739,19 @@ void VoIPConnection::peer_disconnected( int64_t peer_id )
             break;
         }
     }
-    receiving_peers_mutex->unlock();
+    receiving_peers_mutex.unlock();
 }
 
 template <typename AudioStreamPlayerClass>
-godot::Ref<godot::AudioStreamGeneratorPlayback> create_playback( AudioStreamPlayerClass *player,
+godot::Ref<AudioStreamVoipPlayback> create_playback( AudioStreamPlayerClass *player,
                                                                  int godot_mix_rate,
                                                                  float buffer_length,
                                                                  float volume_db)
 {
-    godot::Ref<godot::AudioStreamGenerator> audio_stream_generator;
-    godot::Ref<godot::AudioStreamGeneratorPlayback> stream_playback;
+    PROFILE_FUNCTION()
+    godot::Ref<AudioStreamVoip> audio_stream_generator;
+    godot::Ref<AudioStreamVoipPlayback> stream_playback;
     audio_stream_generator.instantiate();
-    // resampling is done via our own resampler, if necessary
-    audio_stream_generator->set_mix_rate( godot_mix_rate );
-    audio_stream_generator->set_buffer_length( buffer_length );
     if (player->has_method( "play_stream" ))
     {
         // either SteamAudioPlayer or SteamAudioSource. let's find out:
@@ -705,6 +760,9 @@ godot::Ref<godot::AudioStreamGeneratorPlayback> create_playback( AudioStreamPlay
             // It's a SteamAudioSource! The play_stream method has 3 params:
             // stream, volume_db and pitch (volume and pitch are optional)
             stream_playback = player->call("play_stream", audio_stream_generator, volume_db, 1.0);
+            if (stream_playback.is_valid())
+                // special for the SteamAudioSource! it reacts to _mix returning 0 the right way!
+                stream_playback->set_fill_with_zero( false );
         }
         else
         {
@@ -727,18 +785,13 @@ godot::Ref<godot::AudioStreamGeneratorPlayback> create_playback( AudioStreamPlay
     }
     else
     {
-        // fill the stream_playback buffer with buffer_length silence
-        godot::PackedVector2Array silence_buffer;
-        silence_buffer.resize( buffer_length * godot_mix_rate );
-        silence_buffer.fill( godot::Vector2( 0, 0 ) );
-        stream_playback->push_buffer( silence_buffer );
-        // make sure the audio stream playback resampled is initialized correctly
-        stream_playback->begin_resample();
+        stream_playback->set_buffer_size( buffer_length * godot_mix_rate );
+        stream_playback->start();
     }
     return stream_playback;
 }
 
-VoIPConnection::VoIPReceivingPeer * VoIPConnection::get_receiving_peer_for_id( int64_t peer_id )
+VoIPConnection::VoIPReceivingPeer * VoIPConnection::get_or_create_receiving_peer( int64_t peer_id )
 {
     VoIPReceivingPeer *receiving_peer = nullptr;
     for ( int i = 0; i < receiving_peers.size(); ++i )
@@ -776,7 +829,7 @@ VoIPConnection::VoIPReceivingPeer * VoIPConnection::get_receiving_peer_for_id( i
         receiving_peers.push_back( new_peer );
         receiving_peer = &receiving_peers.write[receiving_peers.size() - 1];
 
-        godot::UtilityFunctions::print( "Created opus decoder for peer ", peer_id,
+        godot::UtilityFunctions::print_verbose( "Created opus decoder for peer ", peer_id,
                                         " successfully." );
     }
     return receiving_peer;
@@ -784,148 +837,161 @@ VoIPConnection::VoIPReceivingPeer * VoIPConnection::get_receiving_peer_for_id( i
 void VoIPConnection::play_peer_on_audio_stream_player(
     int64_t peer_id, godot::AudioStreamPlayer *audio_stream_player )
 {
-    godot::UtilityFunctions::print( "play_peer_on_audio_stream_player start.");
+    PROFILE_FUNCTION()
     if ( peer_id == sending_peer.peer_id )
     {
         auto playback = create_playback( audio_stream_player,
-            godot_mix_rate,
-            // this is a local stream player, we can get away with less buffer
-            (float)audio_package_duration_ms / 1000.0f * 1.25f, 0 );
-        // and we don't want the buffer to be pre-filled with silence in this case
-        sending_audio_stream_vectors_mutex->lock();
+            godot_mix_rate, buffer_length, 0 );
+        sending_audio_stream_vectors_mutex.lock();
         sending_peer.audio_stream_generator_playbacks.push_back( playback );
         sending_peer.audio_stream_generator_playbacks_owners.push_back(
             audio_stream_player->get_instance_id() );
-        sending_audio_stream_vectors_mutex->unlock();
+        sending_audio_stream_vectors_mutex.unlock();
         return;
     }
 
-    receiving_peers_mutex->lock();
-    VoIPReceivingPeer *receiving_peer = get_receiving_peer_for_id( peer_id );
-    receiving_peers_mutex->unlock();
+    // create the playback outside the lock, since that is the most expensive part of the
+    // play_peer_on operation
+    auto playback = create_playback( audio_stream_player, godot_mix_rate, buffer_length, 0 );
+
+    std::lock_guard receiving_peers_lock(receiving_peers_mutex);
+    VoIPReceivingPeer *receiving_peer = get_or_create_receiving_peer( peer_id );
     if ( receiving_peer == nullptr )
     {
+        // the peer has disconnected in the meantime! the created playback will be destroyed
+        // automatically, since it is ref counted (but this part is very unlikely, so the
+        // superfluous playback creation is ok).
         return;
     }
 
-    auto playback = create_playback( audio_stream_player, godot_mix_rate, buffer_length, 0 );
-    receiving_audio_stream_vectors_mutex->lock();
+    receiving_audio_stream_vectors_mutex.lock();
     receiving_peer->audio_stream_generator_playbacks.push_back( playback );
     receiving_peer->audio_stream_generator_playbacks_owners.push_back(audio_stream_player->get_instance_id());
-    receiving_audio_stream_vectors_mutex->unlock();
-    godot::UtilityFunctions::print_verbose( "play_peer_on_audio_stream_player done.");
+    receiving_audio_stream_vectors_mutex.unlock();
 }
 
 void VoIPConnection::play_peer_on_audio_stream_player_2d(
     int64_t peer_id, godot::AudioStreamPlayer2D *audio_stream_player )
 {
+    PROFILE_FUNCTION()
     if ( peer_id == sending_peer.peer_id )
     {
         auto playback = create_playback( audio_stream_player,
-            godot_mix_rate,
-            // this is a local stream player, we can get away with less buffer
-            (float)audio_package_duration_ms / 1000.0f * 1.25f, 0 );
-        // and we don't want the buffer to be pre-filled with silence in this case
-        sending_audio_stream_vectors_mutex->lock();
+            godot_mix_rate,buffer_length, 0 );
+        sending_audio_stream_vectors_mutex.lock();
         sending_peer.audio_stream_generator_playbacks.push_back( playback );
         sending_peer.audio_stream_generator_playbacks_owners.push_back(
             audio_stream_player->get_instance_id() );
-        sending_audio_stream_vectors_mutex->unlock();
+        sending_audio_stream_vectors_mutex.unlock();
         return;
     }
 
-    receiving_peers_mutex->lock();
-    VoIPReceivingPeer *receiving_peer = get_receiving_peer_for_id( peer_id );
-    receiving_peers_mutex->unlock();
+    // create the playback outside the lock, since that is the most expensive part of the
+    // play_peer_on operation
+    auto playback = create_playback( audio_stream_player, godot_mix_rate, buffer_length, 0 );
+
+    std::lock_guard receiving_peers_lock(receiving_peers_mutex);
+    VoIPReceivingPeer *receiving_peer = get_or_create_receiving_peer( peer_id );
     if ( receiving_peer == nullptr )
     {
+        // the peer has disconnected in the meantime! the created playback will be destroyed
+        // automatically, since it is ref counted (but this part is very unlikely, so the
+        // superfluous playback creation is ok).
         return;
     }
 
-    auto playback = create_playback( audio_stream_player, godot_mix_rate, buffer_length, 0 );
-    receiving_audio_stream_vectors_mutex->lock();
+    receiving_audio_stream_vectors_mutex.lock();
     receiving_peer->audio_stream_generator_playbacks.push_back( playback );
     receiving_peer->audio_stream_generator_playbacks_owners.push_back(audio_stream_player->get_instance_id());
-    receiving_audio_stream_vectors_mutex->unlock();
+    receiving_audio_stream_vectors_mutex.unlock();
     godot::UtilityFunctions::print_verbose( "play_peer_on_audio_stream_player_2d done.");
 }
 
 void VoIPConnection::play_peer_on_audio_stream_player_3d(
     int64_t peer_id, godot::AudioStreamPlayer3D* audio_stream_player )
 {
+    PROFILE_FUNCTION()
     if ( peer_id == sending_peer.peer_id )
     {
         auto playback = create_playback( audio_stream_player,
-            godot_mix_rate,
-            // this is a local stream player, we can get away with less buffer
-            (float)audio_package_duration_ms / 1000.0f * 1.25f, 0 );
-        // and we don't want the buffer to be pre-filled with silence in this case
-        sending_audio_stream_vectors_mutex->lock();
+            godot_mix_rate, buffer_length, 0 );
+        sending_audio_stream_vectors_mutex.lock();
         sending_peer.audio_stream_generator_playbacks.push_back( playback );
         sending_peer.audio_stream_generator_playbacks_owners.push_back(
             audio_stream_player->get_instance_id() );
-        sending_audio_stream_vectors_mutex->unlock();
+        sending_audio_stream_vectors_mutex.unlock();
         return;
     }
 
-    receiving_peers_mutex->lock();
-    VoIPReceivingPeer *receiving_peer = get_receiving_peer_for_id( peer_id );
-    receiving_peers_mutex->unlock();
+    // create the playback outside the lock, since that is the most expensive part of the
+    // play_peer_on operation
+    auto playback = create_playback( audio_stream_player, godot_mix_rate, buffer_length, 0 );
+
+    std::lock_guard receiving_peers_lock(receiving_peers_mutex);
+    VoIPReceivingPeer *receiving_peer = get_or_create_receiving_peer( peer_id );
     if ( receiving_peer == nullptr )
     {
+        // the peer has disconnected in the meantime! the created playback will be destroyed
+        // automatically, since it is ref counted (but this part is very unlikely, so the
+        // superfluous playback creation is ok).
         return;
     }
 
-    auto playback = create_playback( audio_stream_player, godot_mix_rate, buffer_length, 0 );
-    receiving_audio_stream_vectors_mutex->lock();
+    receiving_audio_stream_vectors_mutex.lock();
     receiving_peer->audio_stream_generator_playbacks.push_back( playback );
     receiving_peer->audio_stream_generator_playbacks_owners.push_back(audio_stream_player->get_instance_id());
-    receiving_audio_stream_vectors_mutex->unlock();
+    receiving_audio_stream_vectors_mutex.unlock();
     godot::UtilityFunctions::print_verbose( "play_peer_on_audio_stream_player_3d done.");
 }
 
 godot::Ref<godot::AudioStreamPlayback> VoIPConnection::play_peer_on(
     int64_t peer_id, godot::Node* node )
 {
+    PROFILE_FUNCTION()
     if ( peer_id == sending_peer.peer_id )
     {
         auto playback = create_playback( node,
-            godot_mix_rate,
-            // this is a local stream player, we can get away with less buffer
-            (float)audio_package_duration_ms / 1000.0f * 1.25f, 0 );
-        // and we don't want the buffer to be pre-filled with silence in this case
-        sending_audio_stream_vectors_mutex->lock();
+            godot_mix_rate, buffer_length, 0 );
+        sending_audio_stream_vectors_mutex.lock();
         sending_peer.audio_stream_generator_playbacks.push_back( playback );
         sending_peer.audio_stream_generator_playbacks_owners.push_back(
             node->get_instance_id() );
-        sending_audio_stream_vectors_mutex->unlock();
+        sending_audio_stream_vectors_mutex.unlock();
         return playback;
     }
 
-    receiving_peers_mutex->lock();
-    VoIPReceivingPeer *receiving_peer = get_receiving_peer_for_id( peer_id );
-    receiving_peers_mutex->unlock();
+    // create the playback outside the lock, since that is the most expensive part of the
+    // play_peer_on operation
+    auto playback = create_playback( node, godot_mix_rate, buffer_length, 0 );
+
+    std::lock_guard receiving_peers_lock(receiving_peers_mutex);
+    VoIPReceivingPeer *receiving_peer = get_or_create_receiving_peer( peer_id );
     if ( receiving_peer == nullptr )
     {
+        // the peer has disconnected in the meantime! the created playback will be destroyed
+        // automatically, since it is ref counted (but this part is very unlikely, so the
+        // superfluous playback creation is ok).
         return nullptr;
     }
 
-    auto playback = create_playback( node, godot_mix_rate, buffer_length, 0 );
-    receiving_audio_stream_vectors_mutex->lock();
+    receiving_audio_stream_vectors_mutex.lock();
     receiving_peer->audio_stream_generator_playbacks.push_back( playback );
     receiving_peer->audio_stream_generator_playbacks_owners.push_back(node->get_instance_id());
-    receiving_audio_stream_vectors_mutex->unlock();
+    receiving_audio_stream_vectors_mutex.unlock();
     godot::UtilityFunctions::print_verbose( "play_peer_on done." );
     return playback;
 }
 
 void VoIPConnection::stop_peer_on_audio_stream_player( godot::Object *audio_stream_player )
 {
+    PROFILE_FUNCTION()
     uint64_t instance_id = audio_stream_player->get_instance_id();
+    // the find on the audio_streams doesn't need a lock, since this function is only called
+    // from the main thread and the main thread is also the only one changing the vector.
     auto sending_playback_index = sending_peer.audio_stream_generator_playbacks_owners.find( instance_id );
     if (sending_playback_index != -1)
     {
-        sending_audio_stream_vectors_mutex->lock();
+        sending_audio_stream_vectors_mutex.lock();
         auto playback = sending_peer.audio_stream_generator_playbacks.get( sending_playback_index );
         if (playback.is_valid())
         {
@@ -933,16 +999,17 @@ void VoIPConnection::stop_peer_on_audio_stream_player( godot::Object *audio_stre
         }
         sending_peer.audio_stream_generator_playbacks.remove_at( sending_playback_index );
         sending_peer.audio_stream_generator_playbacks_owners.remove_at( sending_playback_index );
-        sending_audio_stream_vectors_mutex->unlock();
+        sending_audio_stream_vectors_mutex.unlock();
         godot::UtilityFunctions::print_verbose( "stop_peer_on_audio_stream_player found sending player and removed the playback.");
         return;
     }
+    std::shared_lock receiving_peers_shared_lock(receiving_peers_mutex);
     for ( int i = 0; i < receiving_peers.size(); ++i )
     {
         auto receiving_playback_index = receiving_peers[i].audio_stream_generator_playbacks_owners.find( instance_id );
         if (receiving_playback_index != -1)
         {
-            receiving_audio_stream_vectors_mutex->lock();
+            receiving_audio_stream_vectors_mutex.lock();
             auto playback = receiving_peers.get(i).audio_stream_generator_playbacks.get( receiving_playback_index );
             if (playback.is_valid())
             {
@@ -950,7 +1017,7 @@ void VoIPConnection::stop_peer_on_audio_stream_player( godot::Object *audio_stre
             }
             receiving_peers.write[i].audio_stream_generator_playbacks.remove_at( receiving_playback_index );
             receiving_peers.write[i].audio_stream_generator_playbacks_owners.remove_at( receiving_playback_index );
-            receiving_audio_stream_vectors_mutex->unlock();
+            receiving_audio_stream_vectors_mutex.unlock();
             godot::UtilityFunctions::print_verbose( "stop_peer_on_audio_stream_player found receiving player and removed the playback.");
             return;
         }
@@ -959,9 +1026,10 @@ void VoIPConnection::stop_peer_on_audio_stream_player( godot::Object *audio_stre
 
 void VoIPConnection::stop_all_audio_stream_players_for_peer( int64_t peer_id )
 {
+    PROFILE_FUNCTION()
     if (peer_id == sending_peer.peer_id)
     {
-        sending_audio_stream_vectors_mutex->lock();
+        sending_audio_stream_vectors_mutex.lock();
         for (int i = 0; i < sending_peer.audio_stream_generator_playbacks.size(); ++i)
         {
             auto playback = sending_peer.audio_stream_generator_playbacks.get(i);
@@ -972,14 +1040,15 @@ void VoIPConnection::stop_all_audio_stream_players_for_peer( int64_t peer_id )
         }
         sending_peer.audio_stream_generator_playbacks.clear();
         sending_peer.audio_stream_generator_playbacks_owners.clear();
-        sending_audio_stream_vectors_mutex->unlock();
+        sending_audio_stream_vectors_mutex.unlock();
         return;
     }
+    std::shared_lock receiving_peers_shared_lock(receiving_peers_mutex);
     for ( int i = 0; i < receiving_peers.size(); ++i )
     {
         if (receiving_peers[i].peer_id == peer_id)
         {
-            receiving_audio_stream_vectors_mutex->lock();
+            receiving_audio_stream_vectors_mutex.lock();
             for (int j = 0; j < receiving_peers[i].audio_stream_generator_playbacks.size(); ++j)
             {
                 auto playback = receiving_peers[i].audio_stream_generator_playbacks.get(j);
@@ -990,7 +1059,7 @@ void VoIPConnection::stop_all_audio_stream_players_for_peer( int64_t peer_id )
             }
             receiving_peers.write[i].audio_stream_generator_playbacks.clear();
             receiving_peers.write[i].audio_stream_generator_playbacks_owners.clear();
-            receiving_audio_stream_vectors_mutex->unlock();
+            receiving_audio_stream_vectors_mutex.unlock();
             return;
         }
     }

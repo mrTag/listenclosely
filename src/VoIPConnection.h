@@ -4,13 +4,16 @@
 #include "godot_cpp/classes/audio_stream_generator_playback.hpp"
 #include "godot_cpp/classes/node.hpp"
 #include "godot_cpp/classes/thread.hpp"
-#include "godot_cpp/classes/mutex.hpp"
 #include "godot_cpp/templates/local_vector.hpp"
 
 #include <godot_cpp/classes/audio_stream_player.hpp>
 #include <godot_cpp/classes/audio_stream_player2d.hpp>
 #include <godot_cpp/classes/audio_stream_player3d.hpp>
 #include <godot_cpp/classes/multiplayer_peer.hpp>
+
+#include <shared_mutex>
+
+#include "AudioStreamVoip.h"
 
 struct OpusEncoder;
 struct OpusDecoder;
@@ -52,14 +55,57 @@ protected:
         uint64_t stream_has_packets_until;
 
         // there can be multiple audiostream players per peer, so these are vectors:
-        godot::Vector<godot::Ref<godot::AudioStreamGeneratorPlayback>> audio_stream_generator_playbacks;
+        godot::Vector<godot::Ref<AudioStreamVoipPlayback>> audio_stream_generator_playbacks;
         godot::Vector<uint64_t> audio_stream_generator_playbacks_owners;
     };
     godot::Vector<VoIPReceivingPeer> receiving_peers;
-    godot::Ref<godot::Mutex> receiving_peers_mutex;
+    std::shared_mutex receiving_peers_mutex;
     // this mutex protects changing the audio_stream vectors of all the receiving peers
     // since they won't be changed that often anyways.
-    godot::Ref<godot::Mutex> receiving_audio_stream_vectors_mutex;
+    std::shared_mutex receiving_audio_stream_vectors_mutex;
+    int64_t get_next_peer_id(int64_t current_peer_id, int* check_index) const
+    {
+        if (current_peer_id <= 0)
+        {
+            // first call in the loop, return the first peer_id
+            if (receiving_peers.is_empty()) return -1;
+            *check_index = 0;
+            return receiving_peers[0].peer_id;
+        }
+        for (int i = 0; i < receiving_peers.size(); i++)
+        {
+            if (receiving_peers[i].peer_id == current_peer_id)
+            {
+                if (i == receiving_peers.size()-1)
+                {
+                    // the current peer was the last one
+                    *check_index = -1;
+                    return -1;
+                }
+                *check_index = i + 1;
+                return receiving_peers[i + 1].peer_id;
+            }
+        }
+        if (*check_index != -1)
+        {
+            // the current peer probably has been removed! try to get the original next
+            // peer with the check index:
+            if (*check_index < receiving_peers.size())
+                return receiving_peers[*check_index].peer_id;
+        }
+        *check_index = -1;
+        return -1;
+    }
+    VoIPReceivingPeer *get_receiving_peer_or_null( int64_t peer_id )
+    {
+        if (peer_id <= 0) return nullptr;
+        for ( int i = 0; i < receiving_peers.size(); ++i )
+        {
+            if ( receiving_peers[i].peer_id == peer_id )
+                return &receiving_peers.write[i];
+        }
+        return nullptr;
+    }
 
     struct VoIPSendingPeer
     {
@@ -68,11 +114,11 @@ protected:
         OpusEncoder *_opus_encoder = nullptr;
         oboe::resampler::MultiChannelResampler * _resampler = nullptr;
         // even when sending, there still can be audiostream players (walkie talkie, intercom...)
-        godot::Vector<godot::Ref<godot::AudioStreamGeneratorPlayback>> audio_stream_generator_playbacks;
+        godot::Vector<godot::Ref<AudioStreamVoipPlayback>> audio_stream_generator_playbacks;
         godot::Vector<uint64_t> audio_stream_generator_playbacks_owners;
     };
     VoIPSendingPeer sending_peer;
-    godot::Ref<godot::Mutex> sending_audio_stream_vectors_mutex;
+    std::shared_mutex sending_audio_stream_vectors_mutex;
 
     void capture_encode_send_thread_loop();
     void receive_decode_thread_loop();
@@ -80,16 +126,16 @@ protected:
     godot::Ref<godot::Thread> capture_encode_send_thread;
     godot::Ref<godot::Thread> receive_decode_thread;
     std::atomic_bool close_threads = false;
-    std::atomic<int> sending_bandwidth = 0.0f;
-    std::atomic<int> receiving_bandwidth = 0.0f;
-    std::atomic<int> send_thread_iteration_duration = 0.0f;
-    std::atomic<int> receive_thread_iteration_duration = 0.0f;
+    std::atomic<int> sending_bandwidth = 0;
+    std::atomic<int> receiving_bandwidth = 0;
+    std::atomic<int> send_thread_iteration_duration = 0;
+    std::atomic<int> receive_thread_iteration_duration = 0;
     std::atomic<float> microphone_loudness_db = 0.0f;
     std::atomic<float> microphone_peak_db = 0.0f;
     std::atomic<float> microphone_gain = 1.0f;
 
     godot::Ref<godot::MultiplayerPeer> multiplayer_peer;
-    godot::Ref<godot::Mutex> multiplayer_peer_mutex;
+    std::mutex multiplayer_peer_mutex;
     void peer_disconnected( int64_t peer_id );
 public:
     void _exit_tree() override;
@@ -108,10 +154,10 @@ public:
     float get_microphone_gain() const { return microphone_gain.load(); }
     void set_microphone_gain(float value) { microphone_gain.store(value); }
 
-    void lock_multiplayer_peer() { if (multiplayer_peer_mutex.is_valid()) multiplayer_peer_mutex->lock(); }
-    void unlock_multiplayer_peer() { if (multiplayer_peer_mutex.is_valid()) multiplayer_peer_mutex->unlock(); }
+    void lock_multiplayer_peer() { multiplayer_peer_mutex.lock(); }
+    void unlock_multiplayer_peer() { multiplayer_peer_mutex.unlock(); }
 
-    VoIPReceivingPeer *get_receiving_peer_for_id( int64_t peer_id );
+    VoIPReceivingPeer *get_or_create_receiving_peer( int64_t peer_id );
     void play_peer_on_audio_stream_player(
         int64_t peer_id, godot::AudioStreamPlayer* audio_stream_player );
     void play_peer_on_audio_stream_player_2d(
@@ -124,8 +170,8 @@ public:
     void stop_all_audio_stream_players_for_peer(int64_t peer_id);
 
     int get_number_of_receiving_peers() const { return receiving_peers.size(); }
-    godot::String get_receiving_peer_debug_string(int peer_index ) const;
-    godot::String get_sending_debug_string() const;
+    godot::String get_receiving_peer_debug_string(int peer_index );
+    godot::String get_sending_debug_string();
     int get_sending_bandwidth() const { return sending_bandwidth; }
     int get_receiving_bandwidth() const { return receiving_bandwidth; }
     int get_send_thread_iteration_duration() const { return send_thread_iteration_duration; }
