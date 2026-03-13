@@ -13,6 +13,8 @@
 
 #include <shared_mutex>
 
+#include "godot_cpp/classes/audio_effect_instance.hpp"
+#include "godot_cpp/classes/audio_effect_hard_limiter.hpp"
 #include "AudioStreamVoip.h"
 
 struct OpusEncoder;
@@ -116,6 +118,8 @@ protected:
         // even when sending, there still can be audiostream players (walkie talkie, intercom...)
         godot::Vector<godot::Ref<AudioStreamVoipPlayback>> audio_stream_generator_playbacks;
         godot::Vector<uint64_t> audio_stream_generator_playbacks_owners;
+        godot::Ref<godot::AudioEffectHardLimiter> audio_effect_hard_limiter;
+        godot::Ref<godot::AudioEffectInstance> audio_effect_hard_limiter_instance;
     };
     VoIPSendingPeer sending_peer;
     std::shared_mutex sending_audio_stream_vectors_mutex;
@@ -133,6 +137,8 @@ protected:
     std::atomic<float> microphone_loudness_db = 0.0f;
     std::atomic<float> microphone_peak_db = 0.0f;
     std::atomic<float> microphone_gain = 1.0f;
+    std::atomic<float> send_thread_percentage_busy = 0.0f;
+    std::atomic<float> receive_thread_percentage_busy = 0.0f;
 
     godot::Ref<godot::MultiplayerPeer> multiplayer_peer;
     std::mutex multiplayer_peer_mutex;
@@ -176,6 +182,8 @@ public:
     int get_receiving_bandwidth() const { return receiving_bandwidth; }
     int get_send_thread_iteration_duration() const { return send_thread_iteration_duration; }
     int get_receive_thread_iteration_duration() const { return receive_thread_iteration_duration; }
+    float get_send_thread_percentage_busy() const { return send_thread_percentage_busy.load(); }
+    float get_receive_thread_percentage_busy() const { return receive_thread_percentage_busy.load(); }
 };
 
 

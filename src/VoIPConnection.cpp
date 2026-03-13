@@ -15,11 +15,12 @@
 #include "godot_cpp/variant/utility_functions.hpp"
 #include "godot_cpp/classes/display_server.hpp"
 #include "godot_cpp/variant/callable.hpp"
+#include "godot_cpp/classes/audio_effect_hard_limiter.hpp"
 
 #include "profiling.h"
 
-#include <cmath>
 #include "RingBuffer.h"
+#include <cmath>
 
 const int VOIP_CHANNEL = 11;
 
@@ -98,6 +99,10 @@ void VoIPConnection::_bind_methods()
     godot::ClassDB::bind_method(godot::D_METHOD("get_receiving_bandwidth"), &VoIPConnection::get_receiving_bandwidth);
     godot::ClassDB::bind_method(godot::D_METHOD("get_receive_thread_iteration_duration"), &VoIPConnection::get_receive_thread_iteration_duration);
     godot::ClassDB::bind_method(godot::D_METHOD("get_send_thread_iteration_duration"), &VoIPConnection::get_send_thread_iteration_duration);
+    godot::ClassDB::bind_method(godot::D_METHOD("get_send_thread_percentage_busy"), &VoIPConnection::get_send_thread_percentage_busy);
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::FLOAT, "send_thread_percentage_busy"), "", "get_send_thread_percentage_busy");
+    godot::ClassDB::bind_method(godot::D_METHOD("get_receive_thread_percentage_busy"), &VoIPConnection::get_receive_thread_percentage_busy);
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::FLOAT, "receive_thread_percentage_busy"), "", "get_receive_thread_percentage_busy");
 
     godot::ClassDB::bind_method( godot::D_METHOD( "capture_encode_send_thread_loop" ),
                                  &VoIPConnection::capture_encode_send_thread_loop );
@@ -183,13 +188,14 @@ void VoIPConnection::capture_encode_send_thread_loop()
     godot::PackedByteArray byte_buffer;
     uint8_t packet_number = 0;
     int duration = 0;
+    int total_duration = 0;
     auto duration_measurement_start_time = godot::Time::get_singleton()->get_ticks_msec();
 
     auto wait_time = std::chrono::milliseconds(
-        5
+        2
     );
     using clock = std::chrono::steady_clock;
-    auto spin_threshold = std::chrono::milliseconds(1);
+    auto spin_threshold = std::chrono::microseconds(500);
     while (!close_threads.load( ))
     {
         auto start = clock::now();
@@ -207,13 +213,17 @@ void VoIPConnection::capture_encode_send_thread_loop()
                 audio_package_duration_ms * godot_mix_rate / 1000 );
 
             {
-                float gain = microphone_gain.load();
+                {
+                    PROFILE_FUNCTION_NAMED( "hard_limiter_effect" );
+                    float gain = microphone_gain.load();
+                    sending_peer.audio_effect_hard_limiter->set_pre_gain_db( gain );
+                    stereoSampleBuffer = sending_peer.audio_effect_hard_limiter_instance->process_audio( stereoSampleBuffer, stereoSampleBuffer.size() );
+                }
                 float peak = 0.0f;
                 double sum_sq = 0.0;
                 for ( int i = 0; i < stereoSampleBuffer.size(); ++i )
                 {
-                    float sample = stereoSampleBuffer[i].x * gain;
-                    stereoSampleBuffer.set(i, { sample, sample });
+                    float sample = stereoSampleBuffer[i].x;
                     float abs_sample = std::abs( sample );
                     if ( abs_sample > peak )
                     {
@@ -346,11 +356,14 @@ void VoIPConnection::capture_encode_send_thread_loop()
         }
         sending_bandwidth = num_sent_bytes;
 
-        duration += godot::Time::get_singleton()->get_ticks_msec() - start_time;
+        auto work_time_ms = godot::Time::get_singleton()->get_ticks_msec() - start_time;
+        duration += work_time_ms;
         if (duration_measurement_start_time + 1000 < godot::Time::get_singleton()->get_ticks_msec())
         {
             send_thread_iteration_duration = duration;
+            send_thread_percentage_busy.store( total_duration > 0 ? static_cast<float>(duration) / static_cast<float>(total_duration) : 0.0f );
             duration = 0;
+            total_duration = 0;
             duration_measurement_start_time = godot::Time::get_singleton()->get_ticks_msec();
         }
 
@@ -366,6 +379,7 @@ void VoIPConnection::capture_encode_send_thread_loop()
                 }
             }
         }
+        total_duration += godot::Time::get_singleton()->get_ticks_msec() - start_time;
     }
 }
 
@@ -433,12 +447,13 @@ void VoIPConnection::receive_decode_thread_loop()
     godot::PackedVector2Array stream_buffer;
 
     int duration = 0;
+    int total_duration = 0;
     auto duration_measurement_start_time = godot::Time::get_singleton()->get_ticks_msec();
     auto wait_time = std::chrono::milliseconds(
-        5
+        2
     );
     using clock = std::chrono::steady_clock;
-    auto spin_threshold = std::chrono::milliseconds(1);
+    auto spin_threshold = std::chrono::microseconds(500);
     while (!close_threads.load( ))
     {
         auto start = clock::now();
@@ -623,11 +638,14 @@ void VoIPConnection::receive_decode_thread_loop()
         }
         receiving_bandwidth = num_recv_bytes;
 
-        duration += godot::Time::get_singleton()->get_ticks_msec() - start_time;
+        auto work_time_ms = godot::Time::get_singleton()->get_ticks_msec() - start_time;
+        duration += work_time_ms;
         if (duration_measurement_start_time + 1000 < godot::Time::get_singleton()->get_ticks_msec())
         {
             receive_thread_iteration_duration = duration;
+            receive_thread_percentage_busy.store( total_duration > 0 ? static_cast<float>(duration) / static_cast<float>(total_duration) : 0.0f );
             duration = 0;
+            total_duration = 0;
             duration_measurement_start_time = godot::Time::get_singleton()->get_ticks_msec();
         }
 
@@ -643,6 +661,7 @@ void VoIPConnection::receive_decode_thread_loop()
                 }
             }
         }
+        total_duration += godot::Time::get_singleton()->get_ticks_msec() - start_time;
     }
 }
 
@@ -710,6 +729,9 @@ void VoIPConnection::initialize( godot::Ref<godot::MultiplayerPeer> multiplayer_
         sending_peer._resampler = oboe::resampler::MultiChannelResampler::make(
             1, godot_mix_rate, mix_rate, oboe::resampler::MultiChannelResampler::Quality::High );
     }
+    sending_peer.audio_effect_hard_limiter.instantiate();
+    sending_peer.audio_effect_hard_limiter->set_ceiling_db( -0.1f );
+    sending_peer.audio_effect_hard_limiter_instance = sending_peer.audio_effect_hard_limiter->instantiate();
 
     // start both threads, as we'll need them for sure!
     capture_encode_send_thread.instantiate();
