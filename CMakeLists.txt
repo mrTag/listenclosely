@@ -152,6 +152,9 @@ add_subdirectory( extern/godot-cpp )
 add_subdirectory( extern/opus )
 add_subdirectory( extern/oboe )
 
+option(BUILD_RTCD "Enable x86 run-time CPU detection (x86 only)" ON)
+add_subdirectory( extern/rnnoise )
+
 set( PROFILING_ENABLED OFF CACHE BOOL "" )
 if (PROFILING_ENABLED)
     add_compile_definitions(TRACY_ON_DEMAND)
@@ -174,6 +177,7 @@ if (UNIX)
             godot-cpp
             opus
             oboe-resampler
+            RnNoise
     )
 else ()
     target_link_libraries( ${PROJECT_NAME}
@@ -181,6 +185,7 @@ else ()
             godot-cpp
             opus
             oboe-resampler
+            RnNoise
             $<$<BOOL:${PROFILING_ENABLED}>:TracyClient>
     )
 endif ()

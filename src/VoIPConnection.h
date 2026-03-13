@@ -16,6 +16,7 @@
 #include "godot_cpp/classes/audio_effect_instance.hpp"
 #include "godot_cpp/classes/audio_effect_hard_limiter.hpp"
 #include "AudioStreamVoip.h"
+#include <rnnoise.h>
 
 struct OpusEncoder;
 struct OpusDecoder;
@@ -113,8 +114,10 @@ protected:
     {
         int64_t peer_id;
 
+        oboe::resampler::MultiChannelResampler * _denoiser_resampler = nullptr;
+        DenoiseState *_denoiser = nullptr;
+        oboe::resampler::MultiChannelResampler * _opus_resampler = nullptr;
         OpusEncoder *_opus_encoder = nullptr;
-        oboe::resampler::MultiChannelResampler * _resampler = nullptr;
         // even when sending, there still can be audiostream players (walkie talkie, intercom...)
         godot::Vector<godot::Ref<AudioStreamVoipPlayback>> audio_stream_generator_playbacks;
         godot::Vector<uint64_t> audio_stream_generator_playbacks_owners;

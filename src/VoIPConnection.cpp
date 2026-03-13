@@ -186,6 +186,9 @@ void VoIPConnection::capture_encode_send_thread_loop()
 
     godot::PackedFloat32Array float32_buffer;
     godot::PackedByteArray byte_buffer;
+    godot::PackedFloat32Array denoise_input_buffer;
+    godot::PackedFloat32Array denoise_output_buffer;
+    const int RNNOISE_FRAME_SIZE = 480;
     uint8_t packet_number = 0;
     int duration = 0;
     int total_duration = 0;
@@ -211,6 +214,97 @@ void VoIPConnection::capture_encode_send_thread_loop()
             something_sent = true;
             godot::PackedVector2Array stereoSampleBuffer = godot::AudioServer::get_singleton()->get_input_frames(
                 audio_package_duration_ms * godot_mix_rate / 1000 );
+
+            {
+                PROFILE_FUNCTION_NAMED( "denoising" );
+
+                // Step 1: Extract mono and resample to 48kHz if needed
+                int input_sample_count = stereoSampleBuffer.size();
+                int prev_denoise_input_size = denoise_input_buffer.size();
+
+                if ( sending_peer._denoiser_resampler != nullptr )
+                {
+                    // Resample godot_mix_rate -> 48kHz, appending to denoise_input_buffer
+                    // Estimate output size generously
+                    int estimated_output = (int)( (double)input_sample_count * 48000.0 / godot_mix_rate ) + 16;
+                    denoise_input_buffer.resize( prev_denoise_input_size + estimated_output );
+                    int inputIndex = 0;
+                    int outputIndex = prev_denoise_input_size;
+                    int inputSamplesLeft = input_sample_count;
+                    while ( inputSamplesLeft > 0 )
+                    {
+                        if ( sending_peer._denoiser_resampler->isWriteNeeded() )
+                        {
+                            sending_peer._denoiser_resampler->writeNextFrame( &stereoSampleBuffer[inputIndex].x );
+                            inputIndex++;
+                            inputSamplesLeft--;
+                        }
+                        else
+                        {
+                            sending_peer._denoiser_resampler->readNextFrame( &denoise_input_buffer.ptrw()[outputIndex] );
+                            outputIndex++;
+                        }
+                    }
+                    denoise_input_buffer.resize( outputIndex );
+                }
+                else
+                {
+                    // Already at 48kHz, just extract mono
+                    denoise_input_buffer.resize( prev_denoise_input_size + input_sample_count );
+                    float *dst = denoise_input_buffer.ptrw() + prev_denoise_input_size;
+                    for ( int i = 0; i < input_sample_count; ++i )
+                    {
+                        dst[i] = stereoSampleBuffer[i].x;
+                    }
+                }
+
+                // Step 2: Process as many 480-frame chunks as possible through rnnoise
+                int total_samples = denoise_input_buffer.size();
+                int frames_to_process = total_samples / RNNOISE_FRAME_SIZE;
+                int samples_to_process = frames_to_process * RNNOISE_FRAME_SIZE;
+
+                denoise_output_buffer.resize( samples_to_process );
+                float *in_ptr = denoise_input_buffer.ptrw();
+                float *out_ptr = denoise_output_buffer.ptrw();
+
+                for ( int f = 0; f < frames_to_process; ++f )
+                {
+                    // rnnoise expects samples in [-32768, 32767] range
+                    float *frame_in = in_ptr + f * RNNOISE_FRAME_SIZE;
+                    float *frame_out = out_ptr + f * RNNOISE_FRAME_SIZE;
+                    for ( int s = 0; s < RNNOISE_FRAME_SIZE; ++s )
+                    {
+                        frame_in[s] *= 32768.0f;
+                    }
+                    rnnoise_process_frame( sending_peer._denoiser, frame_out, frame_in );
+                    for ( int s = 0; s < RNNOISE_FRAME_SIZE; ++s )
+                    {
+                        frame_out[s] /= 32768.0f;
+                    }
+                }
+
+                // Keep leftover samples for next iteration
+                int leftover = total_samples - samples_to_process;
+                if ( leftover > 0 )
+                {
+                    memmove( denoise_input_buffer.ptrw(), in_ptr + samples_to_process, leftover * sizeof( float ) );
+                }
+                denoise_input_buffer.resize( leftover );
+
+                // Step 3: Write denoised samples back into stereoSampleBuffer
+                stereoSampleBuffer.resize( samples_to_process );
+                for ( int i = 0; i < samples_to_process; ++i )
+                {
+                    stereoSampleBuffer[i] = godot::Vector2( out_ptr[i], out_ptr[i] );
+                }
+            }
+            // with bad combinations of sampling rates and audio_package_duration it can happen
+            // that we don't have anything to process/send this frame (it will be in the
+            // denoise_input_buffer as leftovers)
+            if ( stereoSampleBuffer.size() == 0 )
+            {
+                continue;
+            }
 
             {
                 {
@@ -276,7 +370,7 @@ void VoIPConnection::capture_encode_send_thread_loop()
             // opus needs the samples in a float32 buffer, we just reserve more than enough here
             float32_buffer.resize( stereoSampleBuffer.size() * 2 );
             int numSamplesInSampleBuffer = 0;
-            if ( sending_peer._resampler != nullptr )
+            if ( sending_peer._opus_resampler != nullptr )
             {
                 PROFILE_FUNCTION_NAMED( "resampling" );
                 int inputSamplesLeft = (int)stereoSampleBuffer.size();
@@ -284,15 +378,15 @@ void VoIPConnection::capture_encode_send_thread_loop()
                 int outputIndex = 0;
                 while ( inputSamplesLeft > 0 )
                 {
-                    if ( sending_peer._resampler->isWriteNeeded() )
+                    if ( sending_peer._opus_resampler->isWriteNeeded() )
                     {
-                        sending_peer._resampler->writeNextFrame( &stereoSampleBuffer[inputIndex].x );
+                        sending_peer._opus_resampler->writeNextFrame( &stereoSampleBuffer[inputIndex].x );
                         inputIndex++;
                         inputSamplesLeft--;
                     }
                     else
                     {
-                        sending_peer._resampler->readNextFrame( &float32_buffer[outputIndex] );
+                        sending_peer._opus_resampler->readNextFrame( &float32_buffer[outputIndex] );
                         outputIndex++;
                         numSamplesInSampleBuffer++;
                     }
@@ -680,14 +774,18 @@ void VoIPConnection::_exit_tree()
         receive_decode_thread->wait_to_finish();
         receive_decode_thread.unref();
     }
+    if (sending_peer._denoiser != nullptr)
+    {
+        rnnoise_destroy( sending_peer._denoiser );
+    }
 
     if ( sending_peer._opus_encoder != nullptr )
     {
         opus_encoder_destroy( sending_peer._opus_encoder );
         sending_peer._opus_encoder = nullptr;
     }
-    delete sending_peer._resampler;
-    sending_peer._resampler = nullptr;
+    delete sending_peer._opus_resampler;
+    sending_peer._opus_resampler = nullptr;
     sending_peer.audio_stream_generator_playbacks.clear();
     sending_peer.audio_stream_generator_playbacks_owners.clear();
 
@@ -713,6 +811,15 @@ void VoIPConnection::initialize( godot::Ref<godot::MultiplayerPeer> multiplayer_
 
     godot::AudioServer::get_singleton()->set_input_device_active( true );
 
+    const int DENOISER_MIX_RATE = 48000;
+    if (godot_mix_rate != DENOISER_MIX_RATE)
+    {
+        // the rnnoise denoiser needs the sample rate to be 48000
+        sending_peer._denoiser_resampler = oboe::resampler::MultiChannelResampler::make(
+            1, godot_mix_rate, 48000, oboe::resampler::MultiChannelResampler::Quality::High );
+    }
+    sending_peer._denoiser = rnnoise_create( nullptr );
+
     int opus_error = 0;
     sending_peer._opus_encoder =
         opus_encoder_create( mix_rate, 1, OPUS_APPLICATION_VOIP, &opus_error );
@@ -723,11 +830,10 @@ void VoIPConnection::initialize( godot::Ref<godot::MultiplayerPeer> multiplayer_
         return;
     }
 
-    godot_mix_rate = (int)audioserver->get_mix_rate();
-    if ( godot_mix_rate != mix_rate )
+    if ( mix_rate != DENOISER_MIX_RATE )
     {
-        sending_peer._resampler = oboe::resampler::MultiChannelResampler::make(
-            1, godot_mix_rate, mix_rate, oboe::resampler::MultiChannelResampler::Quality::High );
+        sending_peer._opus_resampler = oboe::resampler::MultiChannelResampler::make(
+            1, DENOISER_MIX_RATE, mix_rate, oboe::resampler::MultiChannelResampler::Quality::High );
     }
     sending_peer.audio_effect_hard_limiter.instantiate();
     sending_peer.audio_effect_hard_limiter->set_ceiling_db( -0.1f );
