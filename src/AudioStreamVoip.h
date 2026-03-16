@@ -27,6 +27,7 @@ public:
     int get_free_buffer_size() const;
     int get_available_buffer_size() const;
     void set_fill_with_zero(bool fwz) { fill_with_zero = fwz; }
+    bool get_fill_with_zero() const { return fill_with_zero; }
 
     void _start( double p_from_pos ) override;
     void _stop() override;

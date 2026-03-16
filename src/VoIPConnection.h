@@ -43,6 +43,13 @@ protected:
     float buffer_length = 0.05f;
     int audio_package_duration_ms = 20;
 
+    struct PlaybackData
+    {
+        godot::Ref<AudioStreamVoipPlayback> playback;
+        uint64_t owner;
+        bool has_to_use_fill_with_zero = true;
+    };
+
     struct VoIPReceivingPeer
     {
         int64_t peer_id;
@@ -50,6 +57,8 @@ protected:
         uint8_t expected_packet_number = 0;
         uint8_t skipped_packets = 0;
         bool received_first_packet = false;
+        bool peer_is_muted = false;
+        int muted_fade_frames = 0;
         godot::Vector<godot::PackedByteArray> queued_packets;
         godot::Vector<uint64_t> queued_packets_received_times;
 
@@ -58,8 +67,7 @@ protected:
         uint64_t stream_has_packets_until;
 
         // there can be multiple audiostream players per peer, so these are vectors:
-        godot::Vector<godot::Ref<AudioStreamVoipPlayback>> audio_stream_generator_playbacks;
-        godot::Vector<uint64_t> audio_stream_generator_playbacks_owners;
+        godot::Vector<PlaybackData> playbacks;
     };
     godot::Vector<VoIPReceivingPeer> receiving_peers;
     std::shared_mutex receiving_peers_mutex;
@@ -119,8 +127,7 @@ protected:
         oboe::resampler::MultiChannelResampler * _opus_resampler = nullptr;
         OpusEncoder *_opus_encoder = nullptr;
         // even when sending, there still can be audiostream players (walkie talkie, intercom...)
-        godot::Vector<godot::Ref<AudioStreamVoipPlayback>> audio_stream_generator_playbacks;
-        godot::Vector<uint64_t> audio_stream_generator_playbacks_owners;
+        godot::Vector<PlaybackData> playbacks;
         godot::Ref<godot::AudioEffectHardLimiter> audio_effect_hard_limiter;
         godot::Ref<godot::AudioEffectInstance> audio_effect_hard_limiter_instance;
     };
@@ -142,9 +149,11 @@ protected:
     std::atomic<float> microphone_gain = 1.0f;
     std::atomic<float> send_thread_percentage_busy = 0.0f;
     std::atomic<float> receive_thread_percentage_busy = 0.0f;
+    std::atomic_bool muted = false;
 
     godot::Ref<godot::MultiplayerPeer> multiplayer_peer;
     std::mutex multiplayer_peer_mutex;
+    void peer_connected( int64_t peer_id );
     void peer_disconnected( int64_t peer_id );
 public:
     void _exit_tree() override;
@@ -162,6 +171,10 @@ public:
     void set_microphone_peak_db(float value) { microphone_peak_db.store(value); }
     float get_microphone_gain() const { return microphone_gain.load(); }
     void set_microphone_gain(float value) { microphone_gain.store(value); }
+
+    void set_muted( bool p_muted );
+    bool is_muted() const { return muted.load(); }
+    bool is_peer_muted( int64_t peer_id );
 
     void lock_multiplayer_peer() { multiplayer_peer_mutex.lock(); }
     void unlock_multiplayer_peer() { multiplayer_peer_mutex.unlock(); }
