@@ -939,8 +939,13 @@ void VoIPConnection::_exit_tree()
     }
     receiving_peers.clear();
 
-    multiplayer_peer->disconnect( "peer_disconnected", godot::Callable( this, "peer_disconnected" ) );
-    multiplayer_peer->disconnect( "peer_connected", godot::Callable( this, "peer_connected" ) );
+    // A VoIPConnection that never got as far as initialize() has no peer, which happens whenever
+    // a connection attempt is torn down before it completed. Guard the same way set_muted() does.
+    if ( multiplayer_peer.is_valid() )
+    {
+        multiplayer_peer->disconnect( "peer_disconnected", godot::Callable( this, "peer_disconnected" ) );
+        multiplayer_peer->disconnect( "peer_connected", godot::Callable( this, "peer_connected" ) );
+    }
 }
 
 void VoIPConnection::initialize( godot::Ref<godot::MultiplayerPeer> multiplayer_peer_param )
