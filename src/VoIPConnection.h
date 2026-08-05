@@ -40,8 +40,23 @@ protected:
     // 48000 or 24000 or 16000 or 12000 or 8000
     int mix_rate = 24000;
     int godot_mix_rate = 48000;
+    // Receiving side only: playback ring capacity, de-jitter urgency threshold and
+    // the late-packet drop window all derive from it.
     float buffer_length = 0.05f;
     int audio_package_duration_ms = 20;
+
+    // Local self-monitor ("I hear myself") playbacks bypass opus and the network, so
+    // they get their own, tighter budget. Capacity is burst headroom and must stay
+    // comfortably above the target the ring is trimmed back to.
+    float local_monitor_buffer_length = 0.03f;
+    float local_monitor_target_latency_ms = 25.0f;
+    // How often the mic is drained and pushed to the local monitor; the network packet
+    // stays audio_package_duration_ms. 10 ms is exactly one rnnoise frame at 48 kHz.
+    int capture_chunk_duration_ms = 10;
+
+    int local_monitor_target_frames() const {
+        return (int)( local_monitor_target_latency_ms * godot_mix_rate / 1000.0f );
+    }
 
     struct PlaybackData
     {
@@ -125,6 +140,8 @@ protected:
         oboe::resampler::MultiChannelResampler * _denoiser_resampler = nullptr;
         DenoiseState *_denoiser = nullptr;
         oboe::resampler::MultiChannelResampler * _opus_resampler = nullptr;
+        // 48 kHz denoiser output -> godot_mix_rate. Null when the two match.
+        oboe::resampler::MultiChannelResampler * _local_monitor_resampler = nullptr;
         OpusEncoder *_opus_encoder = nullptr;
         // even when sending, there still can be audiostream players (walkie talkie, intercom...)
         godot::Vector<PlaybackData> playbacks;
@@ -164,6 +181,21 @@ public:
 
     int get_audio_package_duration_ms() const { return audio_package_duration_ms; }
     void set_audio_package_duration_ms(int duration) { audio_package_duration_ms = duration; }
+
+    float get_local_monitor_buffer_length() const { return local_monitor_buffer_length; }
+    void set_local_monitor_buffer_length( float p_length ) { local_monitor_buffer_length = p_length; }
+    float get_local_monitor_target_latency_ms() const { return local_monitor_target_latency_ms; }
+    void set_local_monitor_target_latency_ms( float p_ms ) { local_monitor_target_latency_ms = p_ms; }
+    int get_capture_chunk_duration_ms() const { return capture_chunk_duration_ms; }
+    void set_capture_chunk_duration_ms( int p_ms ) { capture_chunk_duration_ms = p_ms; }
+
+    // Max occupancy across the local self-monitor playbacks. Careful with more than
+    // one: a playback nothing consumes sits at full capacity and dominates the max.
+    int get_local_monitor_latency_frames();
+    float get_local_monitor_latency_ms();
+    int get_local_monitor_playback_count();
+    // Per-playback occupancy in ms, in registration order.
+    godot::PackedFloat32Array get_local_monitor_latencies_ms();
 
     float get_microphone_loudness_db() const { return microphone_loudness_db.load(); }
     void set_microphone_loudness_db(float value) { microphone_loudness_db.store(value); }

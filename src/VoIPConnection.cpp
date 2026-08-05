@@ -44,6 +44,36 @@ void VoIPConnection::_bind_methods()
                                  &VoIPConnection::set_audio_package_duration_ms );
     ADD_PROPERTY(godot::PropertyInfo(godot::Variant::INT, "audio_package_duration_ms"), "set_audio_package_duration_ms", "get_audio_package_duration_ms");
 
+    godot::ClassDB::bind_method( godot::D_METHOD( "get_local_monitor_buffer_length" ),
+                                 &VoIPConnection::get_local_monitor_buffer_length );
+    godot::ClassDB::bind_method( godot::D_METHOD( "set_local_monitor_buffer_length", "local_monitor_buffer_length" ),
+                                 &VoIPConnection::set_local_monitor_buffer_length );
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::FLOAT, "local_monitor_buffer_length"),
+        "set_local_monitor_buffer_length", "get_local_monitor_buffer_length");
+
+    godot::ClassDB::bind_method( godot::D_METHOD( "get_local_monitor_target_latency_ms" ),
+                                 &VoIPConnection::get_local_monitor_target_latency_ms );
+    godot::ClassDB::bind_method( godot::D_METHOD( "set_local_monitor_target_latency_ms", "local_monitor_target_latency_ms" ),
+                                 &VoIPConnection::set_local_monitor_target_latency_ms );
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::FLOAT, "local_monitor_target_latency_ms"),
+        "set_local_monitor_target_latency_ms", "get_local_monitor_target_latency_ms");
+
+    godot::ClassDB::bind_method( godot::D_METHOD( "get_capture_chunk_duration_ms" ),
+                                 &VoIPConnection::get_capture_chunk_duration_ms );
+    godot::ClassDB::bind_method( godot::D_METHOD( "set_capture_chunk_duration_ms", "capture_chunk_duration_ms" ),
+                                 &VoIPConnection::set_capture_chunk_duration_ms );
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::INT, "capture_chunk_duration_ms"),
+        "set_capture_chunk_duration_ms", "get_capture_chunk_duration_ms");
+
+    godot::ClassDB::bind_method( godot::D_METHOD( "get_local_monitor_latency_frames" ),
+                                 &VoIPConnection::get_local_monitor_latency_frames );
+    godot::ClassDB::bind_method( godot::D_METHOD( "get_local_monitor_latency_ms" ),
+                                 &VoIPConnection::get_local_monitor_latency_ms );
+    godot::ClassDB::bind_method( godot::D_METHOD( "get_local_monitor_playback_count" ),
+                                 &VoIPConnection::get_local_monitor_playback_count );
+    godot::ClassDB::bind_method( godot::D_METHOD( "get_local_monitor_latencies_ms" ),
+                                 &VoIPConnection::get_local_monitor_latencies_ms );
+
     godot::ClassDB::bind_method( godot::D_METHOD( "get_microphone_loudness_db" ),
                                  &VoIPConnection::get_microphone_loudness_db );
     godot::ClassDB::bind_method( godot::D_METHOD( "set_microphone_loudness_db", "microphone_loudness_db" ),
@@ -178,6 +208,12 @@ godot::String VoIPConnection::get_sending_debug_string()
     godot::String ret;
     ret += "Is muted: ";
     ret += muted.load() ? "true" : "false";
+    ret += "\nRates (input/output/opus): ";
+    ret += godot::String::num(godot::AudioServer::get_singleton()->get_input_mix_rate(), 0);
+    ret += " / ";
+    ret += godot::String::num(godot_mix_rate, 0);
+    ret += " / ";
+    ret += godot::String::num(mix_rate, 0);
     ret += "\nInput frames available: ";
     ret += godot::String::num(godot::AudioServer::get_singleton()->get_input_frames_available());
     ret += "\nInput buffer length frames: ";
@@ -195,11 +231,54 @@ godot::String VoIPConnection::get_sending_debug_string()
         }
         else
         {
-            ret += godot::vformat( ": available frames: %d", playback_data.playback->get_available_buffer_size());
+            int occupancy = playback_data.playback->get_available_buffer_size();
+            ret += godot::vformat( ": latency: %d frames / %.1f ms (target %d, trimmed %d, hard trims %d)",
+                occupancy,
+                occupancy * 1000.0f / godot_mix_rate,
+                playback_data.playback->get_target_latency_frames(),
+                playback_data.playback->get_num_catch_up_frames(),
+                playback_data.playback->get_num_hard_trims() );
         }
         ret += godot::vformat( ": fill with zero: %s", playback_data.playback->get_fill_with_zero() ? "yes" : "no");
     }
     return ret;
+}
+
+int VoIPConnection::get_local_monitor_latency_frames()
+{
+    std::shared_lock sending_peer_shared_lock(sending_audio_stream_vectors_mutex);
+    int worst = 0;
+    for (const auto &playback_data : sending_peer.playbacks)
+    {
+        if (playback_data.playback.is_valid())
+            worst = godot::MAX( worst, playback_data.playback->get_available_buffer_size() );
+    }
+    return worst;
+}
+
+float VoIPConnection::get_local_monitor_latency_ms()
+{
+    return get_local_monitor_latency_frames() * 1000.0f / (float)godot_mix_rate;
+}
+
+int VoIPConnection::get_local_monitor_playback_count()
+{
+    std::shared_lock sending_peer_shared_lock(sending_audio_stream_vectors_mutex);
+    return sending_peer.playbacks.size();
+}
+
+godot::PackedFloat32Array VoIPConnection::get_local_monitor_latencies_ms()
+{
+    std::shared_lock sending_peer_shared_lock(sending_audio_stream_vectors_mutex);
+    godot::PackedFloat32Array result;
+    for (const auto &playback_data : sending_peer.playbacks)
+    {
+        if (playback_data.playback.is_valid())
+            result.push_back( playback_data.playback->get_available_buffer_size() * 1000.0f / (float)godot_mix_rate );
+        else
+            result.push_back( 0.0f );
+    }
+    return result;
 }
 
 void VoIPConnection::set_muted( bool p_muted )
@@ -244,6 +323,29 @@ void VoIPConnection::capture_encode_send_thread_loop()
     godot::PackedFloat32Array denoise_input_buffer;
     godot::PackedFloat32Array denoise_output_buffer;
     const int RNNOISE_FRAME_SIZE = 480;
+    // The mic is drained every capture_chunk_duration_ms but only encoded and sent
+    // once a full audio_package_duration_ms has accumulated. Feeding the opus
+    // resampler a whole packet at a time also keeps its output an exact opus frame
+    // size, which it would not be in smaller pieces.
+    //
+    // MIND THE SAMPLE RATES — four of them, and they need not agree:
+    //   input_mix_rate   the mic device; what get_input_frames() returns
+    //   48 kHz           what rnnoise requires, so everything past the denoiser
+    //   godot_mix_rate   the output device; what the local monitor is drained at
+    //   mix_rate         opus, for the network packets
+    // So the capture chunk is in input frames while encode_pending (and therefore
+    // packet_frames) is in 48 kHz samples. Getting this wrong hands opus an invalid
+    // frame size on every packet.
+    const int DENOISER_MIX_RATE = 48000;
+    const int packet_frames = audio_package_duration_ms * DENOISER_MIX_RATE / 1000;
+    // The input rate is not necessarily known yet when initialize() runs, so the
+    // denoiser resampler is built here lazily and rebuilt on a device switch.
+    int input_mix_rate = 0;
+    int capture_chunk_frames = 0;
+    godot::PackedVector2Array encode_pending;
+    godot::PackedVector2Array local_monitor_resampled;
+    uint64_t next_overflow_log_ms = 0;
+    uint32_t suppressed_overflow_logs = 0;
     uint8_t packet_number = 0;
     int duration = 0;
     int total_duration = 0;
@@ -262,13 +364,43 @@ void VoIPConnection::capture_encode_send_thread_loop()
         bool something_sent = false;
         PROFILING_PLOT_NUMBER( "input_frames_available", (int64_t)godot::AudioServer::get_singleton()->get_input_frames_available() );
 
-        // capture from the microphone
-        while (!close_threads.load( ) && godot::AudioServer::get_singleton()->get_input_frames_available() >= audio_package_duration_ms * godot_mix_rate / 1000 )
         {
-            PROFILE_FUNCTION_NAMED( "process_one_package" );
+            int current_input_rate = (int)godot::AudioServer::get_singleton()->get_input_mix_rate();
+            if ( current_input_rate <= 0 )
+                current_input_rate = godot_mix_rate;
+            if ( current_input_rate != input_mix_rate )
+            {
+                input_mix_rate = current_input_rate;
+                capture_chunk_frames = godot::CLAMP( capture_chunk_duration_ms * input_mix_rate / 1000,
+                    1, audio_package_duration_ms * input_mix_rate / 1000 );
+
+                delete sending_peer._denoiser_resampler;
+                sending_peer._denoiser_resampler = nullptr;
+                if ( input_mix_rate != DENOISER_MIX_RATE )
+                {
+                    // rnnoise only accepts 48 kHz
+                    sending_peer._denoiser_resampler = oboe::resampler::MultiChannelResampler::make(
+                        1, input_mix_rate, DENOISER_MIX_RATE,
+                        oboe::resampler::MultiChannelResampler::Quality::High );
+                }
+                denoise_input_buffer.resize( 0 );
+                encode_pending.resize( 0 );
+                godot::UtilityFunctions::print_verbose(
+                    "VoIPConnection capture configured: input rate ", input_mix_rate,
+                    ", output rate ", godot_mix_rate,
+                    ", opus rate ", mix_rate,
+                    ", capture chunk ", capture_chunk_frames, " frames",
+                    ", packet ", packet_frames, " frames @48kHz" );
+            }
+        }
+
+        // capture from the microphone
+        while (!close_threads.load( ) && godot::AudioServer::get_singleton()->get_input_frames_available() >= capture_chunk_frames )
+        {
+            PROFILE_FUNCTION_NAMED( "process_one_capture_chunk" );
             something_sent = true;
-            godot::PackedVector2Array stereoSampleBuffer = godot::AudioServer::get_singleton()->get_input_frames(
-                audio_package_duration_ms * godot_mix_rate / 1000 );
+            godot::PackedVector2Array stereoSampleBuffer =
+                godot::AudioServer::get_singleton()->get_input_frames( capture_chunk_frames );
 
             {
                 PROFILE_FUNCTION_NAMED( "denoising" );
@@ -279,9 +411,9 @@ void VoIPConnection::capture_encode_send_thread_loop()
 
                 if ( sending_peer._denoiser_resampler != nullptr )
                 {
-                    // Resample godot_mix_rate -> 48kHz, appending to denoise_input_buffer
+                    // Resample input_mix_rate -> 48kHz, appending to denoise_input_buffer
                     // Estimate output size generously
-                    int estimated_output = (int)( (double)input_sample_count * 48000.0 / godot_mix_rate ) + 16;
+                    int estimated_output = (int)( (double)input_sample_count * 48000.0 / input_mix_rate ) + 16;
                     denoise_input_buffer.resize( prev_denoise_input_size + estimated_output );
                     int inputIndex = 0;
                     int outputIndex = prev_denoise_input_size;
@@ -395,6 +527,38 @@ void VoIPConnection::capture_encode_send_thread_loop()
                 // having audio stream players for the sending side is rare, but can happen
                 // for things like walkie-talkies or intercoms, where the player could hear
                 // themselves...
+                //
+                // stereoSampleBuffer is 48 kHz denoiser output; these playbacks are
+                // drained at godot_mix_rate, so convert back when they differ.
+                const godot::PackedVector2Array *local_monitor_buffer = &stereoSampleBuffer;
+                if ( sending_peer._local_monitor_resampler != nullptr )
+                {
+                    PROFILE_FUNCTION_NAMED( "local_monitor_resampling" );
+                    local_monitor_resampled.resize(
+                        (int)( (double)stereoSampleBuffer.size() * godot_mix_rate / DENOISER_MIX_RATE ) + 16 );
+                    int inputSamplesLeft = (int)stereoSampleBuffer.size();
+                    int inputIndex = 0;
+                    int outputIndex = 0;
+                    float resampled_sample = 0.0f;
+                    while ( inputSamplesLeft > 0 )
+                    {
+                        if ( sending_peer._local_monitor_resampler->isWriteNeeded() )
+                        {
+                            sending_peer._local_monitor_resampler->writeNextFrame( &stereoSampleBuffer[inputIndex].x );
+                            inputIndex++;
+                            inputSamplesLeft--;
+                        }
+                        else
+                        {
+                            sending_peer._local_monitor_resampler->readNextFrame( &resampled_sample );
+                            local_monitor_resampled[outputIndex] = godot::Vector2( resampled_sample, resampled_sample );
+                            outputIndex++;
+                        }
+                    }
+                    local_monitor_resampled.resize( outputIndex );
+                    local_monitor_buffer = &local_monitor_resampled;
+                }
+
                 std::shared_lock sending_lock(sending_audio_stream_vectors_mutex);
                 PROFILE_FUNCTION_NAMED( "fill_local_audio_buffer" );
                 bool debug_plot = true;
@@ -408,35 +572,56 @@ void VoIPConnection::capture_encode_send_thread_loop()
                         debug_plot = false;
                     }
                     bool pushed_successfully =
-                        playback_data.playback->push_buffer( stereoSampleBuffer );
+                        playback_data.playback->push_buffer( *local_monitor_buffer );
                     if ( !pushed_successfully )
                     {
-                        godot::UtilityFunctions::print_verbose(
-                            "VoIPConnection could not push local audio buffer into the "
-                            "AudioStreamGeneratorPlayback. Free Space: ",
-                            playback_data.playback->get_free_buffer_size(),
-                            " needed space: ", stereoSampleBuffer.size() );
                         // before we lose the data, let's push at least partially...
-                        playback_data.playback->push_buffer( stereoSampleBuffer.slice(
+                        playback_data.playback->push_buffer( local_monitor_buffer->slice(
                             0, playback_data.playback->get_free_buffer_size() ) );
+
+                        // A permanently full ring means nobody is draining this playback,
+                        // typically a SteamAudioSource on a layer no listener matches.
+                        // Harmless, but it happens every chunk, hence the rate limit.
+                        suppressed_overflow_logs++;
+                        uint64_t now_ms = godot::Time::get_singleton()->get_ticks_msec();
+                        if ( now_ms >= next_overflow_log_ms )
+                        {
+                            godot::UtilityFunctions::print_verbose(
+                                "VoIPConnection: local monitor ring full, dropping audio (",
+                                suppressed_overflow_logs, " chunk(s) since the last report). ",
+                                "Owner id: ", playback_data.owner,
+                                ", free: ", playback_data.playback->get_free_buffer_size(),
+                                ", needed: ", local_monitor_buffer->size(),
+                                ". Nothing is consuming this playback." );
+                            suppressed_overflow_logs = 0;
+                            next_overflow_log_ms = now_ms + 5000;
+                        }
                     }
                 }
             }
 
+            // Hold the chunk back until a whole packet has accumulated, in 48 kHz
+            // samples (see packet_frames).
+            encode_pending.append_array( stereoSampleBuffer );
+            if ( encode_pending.size() < packet_frames )
+                continue;
+            godot::PackedVector2Array packetSampleBuffer = encode_pending.slice( 0, packet_frames );
+            encode_pending = encode_pending.slice( packet_frames );
+
             // opus needs the samples in a float32 buffer, we just reserve more than enough here
-            float32_buffer.resize( stereoSampleBuffer.size() * 2 );
+            float32_buffer.resize( packetSampleBuffer.size() * 2 );
             int numSamplesInSampleBuffer = 0;
             if ( sending_peer._opus_resampler != nullptr )
             {
                 PROFILE_FUNCTION_NAMED( "resampling" );
-                int inputSamplesLeft = (int)stereoSampleBuffer.size();
+                int inputSamplesLeft = (int)packetSampleBuffer.size();
                 int inputIndex = 0;
                 int outputIndex = 0;
                 while ( inputSamplesLeft > 0 )
                 {
                     if ( sending_peer._opus_resampler->isWriteNeeded() )
                     {
-                        sending_peer._opus_resampler->writeNextFrame( &stereoSampleBuffer[inputIndex].x );
+                        sending_peer._opus_resampler->writeNextFrame( &packetSampleBuffer[inputIndex].x );
                         inputIndex++;
                         inputSamplesLeft--;
                     }
@@ -450,11 +635,11 @@ void VoIPConnection::capture_encode_send_thread_loop()
             }
             else
             {
-                for ( int i = 0; i < stereoSampleBuffer.size(); ++i )
+                for ( int i = 0; i < packetSampleBuffer.size(); ++i )
                 {
-                    float32_buffer[i] = stereoSampleBuffer[i].x;
+                    float32_buffer[i] = packetSampleBuffer[i].x;
                 }
-                numSamplesInSampleBuffer = (int)stereoSampleBuffer.size();
+                numSamplesInSampleBuffer = (int)packetSampleBuffer.size();
             }
 
             // the encoded amount of data should be smaller than unencoded, but we
@@ -487,9 +672,17 @@ void VoIPConnection::capture_encode_send_thread_loop()
             }
             else
             {
+                // Usually a frame size opus rejects: it must be 2.5/5/10/20/40/60 ms
+                // at the encoder's rate.
                 godot::UtilityFunctions::printerr( "VoIPConnection could not "
                                                    "encode captured audio. Opus errorcode: ",
-                                                   sizeOfEncodedPackage );
+                                                   sizeOfEncodedPackage,
+                                                   " samples offered: ", numSamplesInSampleBuffer,
+                                                   " (opus rate ", mix_rate,
+                                                   ", packet frames ", packet_frames,
+                                                   ", capture chunk ", capture_chunk_frames,
+                                                   ", input rate ", input_mix_rate,
+                                                   ", output rate ", godot_mix_rate, ")" );
             }
         }
 
@@ -927,6 +1120,10 @@ void VoIPConnection::_exit_tree()
     }
     delete sending_peer._opus_resampler;
     sending_peer._opus_resampler = nullptr;
+    delete sending_peer._denoiser_resampler;
+    sending_peer._denoiser_resampler = nullptr;
+    delete sending_peer._local_monitor_resampler;
+    sending_peer._local_monitor_resampler = nullptr;
     sending_peer.playbacks.clear();
 
     for (const auto & receiving_peer : receiving_peers)
@@ -960,12 +1157,8 @@ void VoIPConnection::initialize( godot::Ref<godot::MultiplayerPeer> multiplayer_
     godot::AudioServer::get_singleton()->set_input_device_active( true );
 
     const int DENOISER_MIX_RATE = 48000;
-    if (godot_mix_rate != DENOISER_MIX_RATE)
-    {
-        // the rnnoise denoiser needs the sample rate to be 48000
-        sending_peer._denoiser_resampler = oboe::resampler::MultiChannelResampler::make(
-            1, godot_mix_rate, 48000, oboe::resampler::MultiChannelResampler::Quality::High );
-    }
+    // _denoiser_resampler is built by the capture thread instead: it converts the
+    // input device's rate, which may not be known yet at this point.
     sending_peer._denoiser = rnnoise_create( nullptr );
 
     int opus_error = 0;
@@ -982,6 +1175,13 @@ void VoIPConnection::initialize( godot::Ref<godot::MultiplayerPeer> multiplayer_
     {
         sending_peer._opus_resampler = oboe::resampler::MultiChannelResampler::make(
             1, DENOISER_MIX_RATE, mix_rate, oboe::resampler::MultiChannelResampler::Quality::High );
+    }
+    if ( godot_mix_rate != DENOISER_MIX_RATE )
+    {
+        // Without this the self-monitor ring is fed at a different rate than it
+        // drains and ends up permanently saturated or starved.
+        sending_peer._local_monitor_resampler = oboe::resampler::MultiChannelResampler::make(
+            1, DENOISER_MIX_RATE, godot_mix_rate, oboe::resampler::MultiChannelResampler::Quality::High );
     }
     sending_peer.audio_effect_hard_limiter.instantiate();
     sending_peer.audio_effect_hard_limiter->set_ceiling_db( -0.1f );
@@ -1033,11 +1233,14 @@ void VoIPConnection::peer_connected( int64_t peer_id )
     multiplayer_peer->put_packet( control_packet );
 }
 
+// p_target_latency_frames > 0 enables the playback's latency trim; only the local
+// self-monitor path passes one, receiving playbacks are governed by the de-jitter.
 template <typename AudioStreamPlayerClass>
 godot::Ref<AudioStreamVoipPlayback> create_playback( AudioStreamPlayerClass *player,
                                                                  int godot_mix_rate,
                                                                  float buffer_length,
-                                                                 float volume_db)
+                                                                 float volume_db,
+                                                                 int p_target_latency_frames = 0)
 {
     PROFILE_FUNCTION()
     godot::Ref<AudioStreamVoip> audio_stream_generator;
@@ -1077,6 +1280,7 @@ godot::Ref<AudioStreamVoipPlayback> create_playback( AudioStreamPlayerClass *pla
     else
     {
         stream_playback->set_buffer_size( buffer_length * godot_mix_rate );
+        stream_playback->set_target_latency_frames( p_target_latency_frames );
         stream_playback->start();
     }
     return stream_playback;
@@ -1132,7 +1336,7 @@ void VoIPConnection::play_peer_on_audio_stream_player(
     if ( peer_id == sending_peer.peer_id )
     {
         auto playback = create_playback( audio_stream_player,
-            godot_mix_rate, buffer_length, 0 );
+            godot_mix_rate, local_monitor_buffer_length, 0, local_monitor_target_frames() );
         sending_audio_stream_vectors_mutex.lock();
         sending_peer.playbacks.push_back( { playback, audio_stream_player->get_instance_id() } );
         sending_audio_stream_vectors_mutex.unlock();
@@ -1165,7 +1369,7 @@ void VoIPConnection::play_peer_on_audio_stream_player_2d(
     if ( peer_id == sending_peer.peer_id )
     {
         auto playback = create_playback( audio_stream_player,
-            godot_mix_rate,buffer_length, 0 );
+            godot_mix_rate, local_monitor_buffer_length, 0, local_monitor_target_frames() );
         sending_audio_stream_vectors_mutex.lock();
         sending_peer.playbacks.push_back( { playback, audio_stream_player->get_instance_id() } );
         sending_audio_stream_vectors_mutex.unlock();
@@ -1199,7 +1403,7 @@ void VoIPConnection::play_peer_on_audio_stream_player_3d(
     if ( peer_id == sending_peer.peer_id )
     {
         auto playback = create_playback( audio_stream_player,
-            godot_mix_rate, buffer_length, 0 );
+            godot_mix_rate, local_monitor_buffer_length, 0, local_monitor_target_frames() );
         sending_audio_stream_vectors_mutex.lock();
         sending_peer.playbacks.push_back( { playback, audio_stream_player->get_instance_id() } );
         sending_audio_stream_vectors_mutex.unlock();
@@ -1233,7 +1437,7 @@ godot::Ref<godot::AudioStreamPlayback> VoIPConnection::play_peer_on(
     if ( peer_id == sending_peer.peer_id )
     {
         auto playback = create_playback( node,
-            godot_mix_rate, buffer_length, 0 );
+            godot_mix_rate, local_monitor_buffer_length, 0, local_monitor_target_frames() );
         sending_audio_stream_vectors_mutex.lock();
         bool has_to_use_fill_with_zero = playback->get_fill_with_zero();
         if (!has_to_use_fill_with_zero && muted.load())
