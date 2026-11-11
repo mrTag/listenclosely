@@ -6,7 +6,7 @@
 
 AudioStreamVoipPlayback::AudioStreamVoipPlayback()
 {
-    ring_buffer.resize( godot::nearest_shift( 1024 ) );
+    ring_buffer.resize( godot::Math::nearest_shift( static_cast<uint32_t>( 1024 ) ) );
     ring_buffer.clear();
 }
 
@@ -15,7 +15,7 @@ void AudioStreamVoipPlayback::set_buffer_size( int p_frames )
     // nearest_shift() rounds an exact power of two up an octave, so the ring can be
     // up to 2x the request. That headroom absorbs bursts; latency is bounded by
     // set_target_latency_frames().
-    ring_buffer.resize( godot::nearest_shift( p_frames ) );
+    ring_buffer.resize( godot::Math::nearest_shift( static_cast<uint32_t>( p_frames ) ) );
     ring_buffer.clear();
 }
 

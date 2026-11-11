@@ -18,6 +18,7 @@
 #include "godot_cpp/classes/audio_effect_hard_limiter.hpp"
 
 #include "profiling.h"
+#include <thread>
 
 #include "RingBuffer.h"
 #include <cmath>
@@ -125,6 +126,19 @@ void VoIPConnection::_bind_methods()
         godot::D_METHOD( "stop_all_audio_stream_players_for_peer", "peer_id" ),
         &VoIPConnection::stop_all_audio_stream_players_for_peer );
 
+    godot::ClassDB::bind_method(
+        godot::D_METHOD( "set_peer_volume", "peer_id", "volume" ),
+        &VoIPConnection::set_peer_volume );
+    godot::ClassDB::bind_method(
+        godot::D_METHOD( "get_peer_volume", "peer_id" ),
+        &VoIPConnection::get_peer_volume );
+    godot::ClassDB::bind_method(
+        godot::D_METHOD( "set_peer_volume_db", "peer_id", "volume_db" ),
+        &VoIPConnection::set_peer_volume_db );
+    godot::ClassDB::bind_method(
+        godot::D_METHOD( "get_peer_volume_db", "peer_id" ),
+        &VoIPConnection::get_peer_volume_db );
+
     godot::ClassDB::bind_method(godot::D_METHOD("get_number_of_receiving_peers"), &VoIPConnection::get_number_of_receiving_peers);
     godot::ClassDB::bind_method(godot::D_METHOD("get_receiving_peer_debug_string", "peer_index"), &VoIPConnection::get_receiving_peer_debug_string);
     godot::ClassDB::bind_method(godot::D_METHOD("get_sending_debug_string"), &VoIPConnection::get_sending_debug_string);
@@ -173,6 +187,9 @@ godot::String VoIPConnection::get_receiving_peer_debug_string( int peer_index )
     godot::String ret;
     ret += "Is muted: ";
     ret += receiving_peers[peer_index].peer_is_muted ? "true" : "false";
+    ret += "\nVolume: ";
+    ret += godot::String::num( receiving_peers[peer_index].volume_db, 1 );
+    ret += " dB";
     ret += "\nExpected Packet Number: ";
     ret += godot::String::num( receiving_peers[peer_index].expected_packet_number, 0 );
     ret += "\nSkipped Packets: ";
@@ -310,6 +327,52 @@ bool VoIPConnection::is_peer_muted( int64_t peer_id )
     if ( peer != nullptr )
         return peer->peer_is_muted;
     return false;
+}
+
+void VoIPConnection::set_peer_volume_db( int64_t peer_id, float volume_db )
+{
+    std::unique_lock lock( receiving_peers_mutex );
+    peer_volumes_db[peer_id] = volume_db;
+    VoIPReceivingPeer *receiving_peer = get_receiving_peer_or_null( peer_id );
+    if ( receiving_peer != nullptr )
+    {
+        receiving_peer->volume_db = volume_db;
+        if ( receiving_peer->audio_effect_hard_limiter.is_valid() )
+        {
+            receiving_peer->audio_effect_hard_limiter->set_pre_gain_db( volume_db );
+        }
+    }
+}
+
+float VoIPConnection::get_peer_volume_db( int64_t peer_id )
+{
+    std::shared_lock lock( receiving_peers_mutex );
+    auto it = peer_volumes_db.find( peer_id );
+    if ( it != peer_volumes_db.end() )
+    {
+        return it->second;
+    }
+    return 0.0f;
+}
+
+void VoIPConnection::set_peer_volume( int64_t peer_id, float volume )
+{
+    float volume_db = -80.0f;
+    if ( volume > 0.0001f )
+    {
+        volume_db = 20.0f * std::log10( volume );
+    }
+    set_peer_volume_db( peer_id, volume_db );
+}
+
+float VoIPConnection::get_peer_volume( int64_t peer_id )
+{
+    float volume_db = get_peer_volume_db( peer_id );
+    if ( volume_db <= -79.0f )
+    {
+        return 0.0f;
+    }
+    return std::pow( 10.0f, volume_db / 20.0f );
 }
 
 void VoIPConnection::capture_encode_send_thread_loop()
@@ -1003,6 +1066,23 @@ void VoIPConnection::receive_decode_thread_loop()
                 }
                 if (processed_packet)
                 {
+                    if ( !receiving_peer->peer_is_muted && stream_buffer.size() > 0 )
+                    {
+                        if ( receiving_peer->volume_db <= -79.0f )
+                        {
+                            for ( int s = 0; s < stream_buffer.size(); ++s )
+                            {
+                                stream_buffer[s] = godot::Vector2( 0.0f, 0.0f );
+                            }
+                        }
+                        else if ( receiving_peer->audio_effect_hard_limiter_instance.is_valid() )
+                        {
+                            PROFILE_FUNCTION_NAMED( "peer_hard_limiter_effect" );
+                            receiving_peer->audio_effect_hard_limiter->set_pre_gain_db( receiving_peer->volume_db );
+                            stream_buffer = receiving_peer->audio_effect_hard_limiter_instance->process_audio( stream_buffer, stream_buffer.size() );
+                        }
+                    }
+
                     receiving_audio_stream_vectors_mutex.lock_shared();
                     PROFILE_FUNCTION_NAMED( "pushing_to_audio_playbacks" );
                     for ( auto &playback_data : receiving_peer->playbacks )
@@ -1320,6 +1400,18 @@ VoIPConnection::VoIPReceivingPeer * VoIPConnection::get_or_create_receiving_peer
                 1, mix_rate, godot_mix_rate,
                 oboe::resampler::MultiChannelResampler::Quality::High );
         }
+
+        new_peer.audio_effect_hard_limiter.instantiate();
+        new_peer.audio_effect_hard_limiter->set_ceiling_db( -0.1f );
+        float initial_db = 0.0f;
+        auto it = peer_volumes_db.find( peer_id );
+        if ( it != peer_volumes_db.end() )
+        {
+            initial_db = it->second;
+        }
+        new_peer.volume_db = initial_db;
+        new_peer.audio_effect_hard_limiter->set_pre_gain_db( initial_db );
+        new_peer.audio_effect_hard_limiter_instance = new_peer.audio_effect_hard_limiter->instantiate();
 
         receiving_peers.push_back( new_peer );
         receiving_peer = &receiving_peers.write[receiving_peers.size() - 1];

@@ -12,6 +12,7 @@
 #include <godot_cpp/classes/multiplayer_peer.hpp>
 
 #include <shared_mutex>
+#include <unordered_map>
 
 #include "godot_cpp/classes/audio_effect_instance.hpp"
 #include "godot_cpp/classes/audio_effect_hard_limiter.hpp"
@@ -83,8 +84,13 @@ protected:
 
         // there can be multiple audiostream players per peer, so these are vectors:
         godot::Vector<PlaybackData> playbacks;
+
+        godot::Ref<godot::AudioEffectHardLimiter> audio_effect_hard_limiter;
+        godot::Ref<godot::AudioEffectInstance> audio_effect_hard_limiter_instance;
+        float volume_db = 0.0f;
     };
     godot::Vector<VoIPReceivingPeer> receiving_peers;
+    std::unordered_map<int64_t, float> peer_volumes_db;
     std::shared_mutex receiving_peers_mutex;
     // this mutex protects changing the audio_stream vectors of all the receiving peers
     // since they won't be changed that often anyways.
@@ -207,6 +213,11 @@ public:
     void set_muted( bool p_muted );
     bool is_muted() const { return muted.load(); }
     bool is_peer_muted( int64_t peer_id );
+
+    void set_peer_volume_db( int64_t peer_id, float volume_db );
+    float get_peer_volume_db( int64_t peer_id );
+    void set_peer_volume( int64_t peer_id, float volume );
+    float get_peer_volume( int64_t peer_id );
 
     void lock_multiplayer_peer() { multiplayer_peer_mutex.lock(); }
     void unlock_multiplayer_peer() { multiplayer_peer_mutex.unlock(); }
